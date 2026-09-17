@@ -1,0 +1,14 @@
+{
+    "id": "rithikkulkarni1/ece592-hw2-food11",
+    "title": "ECE592 HW2 - Food11",
+    "code_file": "ECE592HW2_rrkulka3.ipynb",
+    "language": "python",
+    "kernel_type": "notebook",
+    "is_private": "true",
+    "enable_gpu": "true",
+    "enable_internet": "true",
+    "machine_shape": "NvidiaTeslaT4",
+    "dataset_sources": [],
+    "competition_sources": [],
+    "kernel_sources": []
+}

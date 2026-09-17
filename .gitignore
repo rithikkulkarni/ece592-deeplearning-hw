@@ -1,0 +1,17 @@
+.env
+kaggle.json
+access_token
+__pycache__/
+*.pyc
+
+# Dataset (downloaded locally for Phase 1 verification; not for git)
+food11.zip
+/train/
+/valid/
+/test/
+kaggle_output/
+
+# Training artifacts (checkpoints/logs are large/per-run, not for git)
+*_best.ckpt
+*_log.txt
+submission.csv

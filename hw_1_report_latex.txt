@@ -1,0 +1,364 @@
+\documentclass[10pt]{article}
+
+\usepackage[english]{babel}
+\usepackage[letterpaper,top=1.7cm,bottom=1.7cm,left=2cm,right=2cm,marginparwidth=1.5cm]{geometry}
+\usepackage{titlesec}
+\titlespacing*{\section}{0pt}{8pt}{4pt}
+\titlespacing*{\subsection}{0pt}{6pt}{2pt}
+\usepackage{amsmath}
+\usepackage{graphicx}
+\usepackage[colorlinks=true, allcolors=blue]{hyperref}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{enumitem}
+\usepackage{listings}
+\usepackage{subcaption}
+
+\lstset{
+    basicstyle=\ttfamily\small,
+    breaklines=true,
+    frame=single,
+    columns=fullflexible
+}
+\setlist{noitemsep, topsep=2pt}
+
+\title{Homework 1: ECE 592 Adv. Topics in Efficient Deep Learning}
+\author{Authored by Rithik Kulkarni}
+\date{}
+
+\begin{document}
+\maketitle
+\vspace{-1.5em}
+
+\begin{lstlisting}[caption={Questions}, label={lst:questions}]
+## Question 1: Code setup
+- Run sample code, set a timer for the training process and show how much time it needs to finish training (10pt)
+
+## Question 2
+- Change the optimizer to Adam. Compare its performance with SGD (10pt)
+- Change batch size to 50 and 500. Summarize how the performance change. (10pt)
+- Conduct feature selection in TODO instruction, then conduct the data loading, training, and testing again. Observe how the training and test loss change. (10pt)
+- Change the number of layers in deep neural network to compare their performance. Candidates of layer numbers: 1, 2, 3, 4, 5. (10pt)
+- Based on the best layer number, include the batch norm to see the performance change. (10pt)
+- Include the dropout after batch norm to see how performance change. (10pt)
+\end{lstlisting}
+
+\begin{quote}
+    \textit{\textbf{Note: the provided test set has no ground-truth labels, so test loss cannot be computed directly. dev MSE is used as the standard for testing performance throughout this report.}}
+
+    \textit{\textbf{Additionally, see README/Results at the bottom of the ipynb notebook in this submission to see further notes regarding how I worked in this notebook to complete the assignment.}}
+\end{quote}
+
+\section{Question 1}
+Training time for training process on sample code is measured at \texttt{54.2s}, which reached a best dev MSE of 0.7454. Depicted in \autoref{fig:base_learning_curve} is the reported learning curve (train/dev).
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=0.5\textwidth]{sgd_learning_curve.png}
+    \caption{Reported Learning Curve for Sample Code}
+    \label{fig:base_learning_curve}
+\end{figure}
+
+\section{Question 2}
+\subsection{SGD vs. Adam}
+
+I compared the two gradient descent optimizers with all other hyperparameters held fixed (same architecture, batch size of 270,
+learning rate of 0.001, early-stopping patience of 200 epochs, and random seed) so that the optimizer choice was isolated as the only variable.
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lccc}
+\hline
+\textbf{Optimizer} & \textbf{Training time (s)} & \textbf{Epochs} & \textbf{Best dev MSE} \\
+\hline
+SGD (momentum=0.9)  & 54.2 & 1908 & 0.7454 \\
+Adam                & 24.2 & 896 & 0.7880 \\
+\hline
+\end{tabular}
+\caption{Isolated SGD vs.\ Adam Training Performance.}
+\label{tab:sgd-vs-adam}
+\end{table}
+
+Training with SGD took 54.2s over 1908 epochs and reached a best dev MSE of 0.7454. Training with Adam took 24.2s over 896 epochs and reached a best dev MSE of 0.7880 (\autoref{tab:sgd-vs-adam}). Adam's adaptive per-parameter learning rate lets it descend the loss surface much faster in early training, so it reaches its best result and triggers early stopping in far fewer epochs. The shorter overall time seems to directly reflect the difference in total epoch count to finish training.
+
+Under the same 200-epoch early-stopping patience, however, Adam plateaus and halts before refining its solution as precisely as SGD with momentum does over its slower, steadier descent, leaving it with a higher final dev MSE. Since both optimizers used the same learning rate (0.001), a value chosen for SGD and not independently tuned for Adam, this result likely due to comparing on one specific hyperparameter value rather than demonstrating each optimizer's best possible performance. \autoref{fig:sgd-curve} and \autoref{fig:adam-curve} show the corresponding learning curves for each optimization technique.
+
+\begin{figure}[h]
+    \centering
+    \begin{subfigure}[b]{0.48\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{sgd_learning_curve.png}
+        \caption{SGD}
+        \label{fig:sgd-curve}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}[b]{0.48\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{adam_learning_curve.png}
+        \caption{Adam}
+        \label{fig:adam-curve}
+    \end{subfigure}
+    \caption{Learning curves for SGD and Adam.}
+    \label{fig:learning-curves}
+\end{figure}
+
+\subsection{Batch Size: 50 vs. 500}
+
+I compared batch sizes of 50, 270 (baseline), and 500 with the optimizer (SGD, momentum=0.9), learning rate (0.001), architecture, and early-stopping patience (200 epochs) all held fixed, isolating batch size as the only variable.
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lccc}
+\hline
+\textbf{Batch size} & \textbf{Epochs} & \textbf{Best dev MSE} & \textbf{Training time (s)} \\
+\hline
+50               & 500  & 0.7299 & 39.71 \\
+270 (baseline)   & 1908 & 0.7454 & 54.2  \\
+500              & 1067 & 0.7966 & 20.85 \\
+\hline
+\end{tabular}
+\caption{Effect of batch size on training performance (SGD, lr=0.001, fixed architecture).}
+\label{tab:batch-size}
+\end{table}
+
+Batch size dictates how many training samples are averaged into each gradient estimate before a weight update. With 2430 training samples, a batch size of 50 will produce 49 updates per epoch, 270 produces 9, and 500 produces 5. Smaller batches tend to give noisier but more frequent gradient estimates, which can actually help the optimizer avoid sharp minima. Larger batches give smoother and more accurate gradient estimates and likely better GPU utilization per step, but have fewer updates per epoch.
+
+We can see this exact tradeoff in the results. The smallest batch size we tried, 50, managed to reach the lowest dev MSE of the bunch, at 0.7299. It also did this in the fewest epochs (500), which is consistent with the idea that noisier updates will help the model generalize and converge more efficiently.
+
+The largest batch size, 500, had by far the quickest training time of 20.85s. This is likely due to the fact that running this training on a T4 GPU allows the hardware to parallelize this sort of fewer but larger matrix multiplication steps well. However, this batch size produced the worst dev MSE of 0.7966 despite even needing over double the epochs (1067) to stop than with a batch size of 50. This could suggest that when we have a learning rate fixed at 0.001 for all three of these batch sizes, the larger batch sizes end up under-trained compared to what it could do with a larger learning rate.
+
+Overall, batch size seems to trade off the quality of the model for training speed. Smaller batches tend to generalize better but train slower per epoch, while larger batches can train much faster at the cost of accuracy unless tuned further (perhaps increasing learning rate). \autoref{fig:bs50-curve}, \autoref{fig:bs270-curve}, and \autoref{fig:bs500-curve} show the corresponding learning curves for this experiment.
+
+\begin{figure}[h]
+    \centering
+    \begin{subfigure}[b]{0.32\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{50_batch_learning_curve.png}
+        \caption{Batch size 50}
+        \label{fig:bs50-curve}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}[b]{0.32\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{sgd_learning_curve.png}
+        \caption{Batch size 270 (baseline)}
+        \label{fig:bs270-curve}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}[b]{0.32\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{500_batch_learning_curve.png}
+        \caption{Batch size 500}
+        \label{fig:bs500-curve}
+    \end{subfigure}
+    \caption{Learning curves across batch sizes.}
+    \label{fig:batch-curves}
+\end{figure}
+
+\subsection{Feature Selection}
+
+I compared the full 93-feature input against a hand-picked 42-feature subset (\texttt{target\_only=True}: the 40 one-hot state indicators plus the previous two days' \texttt{tested\_positive} rates, indices 57 and 75), with the optimizer (SGD), learning rate, batch size of 270, architecture, and early-stopping patience of 200 epochs the same throughout.
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lccccc}
+\hline
+\textbf{Feature set} & \textbf{Epochs} & \textbf{Best dev MSE} & \textbf{Final Training Loss} & \textbf{Training time (s)} \\
+\hline
+All 93 (baseline)              & 1908 & 0.7454 & 0.5007 & 54.2  \\
+42 (feature-selected)          & 519  & 0.9614 & 1.0605 & 13.14 \\
+\hline
+\end{tabular}
+\caption{Effect of Feature Selection on Training Performance (SGD, lr=0.001, batch size=270).}
+\label{tab:feature-selection}
+\end{table}
+
+\begin{figure}[h]
+    \centering
+    \begin{subfigure}[b]{0.48\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{sgd_learning_curve.png}
+        \caption{All 93 features}
+        \label{fig:allfeat-curve}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}[b]{0.48\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{selectedfeatures_learning_curve.png}
+        \caption{Feature-selected subset (42 features)}
+        \label{fig:selfeat-curve}
+    \end{subfigure}
+    \caption{Learning curves: full feature set vs. feature-selected subset.}
+    \label{fig:feature-curves}
+\end{figure}
+
+Feature selection substantially sped up training. Training time went from 54.2s down to 13.14s, and 1908 epochs down to 519 before early stopping triggered. This makes sense due to the smaller input dimension (42 vs.\ 93) giving the model fewer parameters to fit and a simpler loss surface to descend. However, it also increased the best dev MSE from 0.7454 to 0.9614, which is a clearly worse accuracy. This shows that the excluded features carried some real predictive signal beyond what state identity and recent positivity rates alone provide, so this particular subset is not an adequate replacement for the full feature set on this task.
+
+Feature selection also drastically increased the final training loss when compared to using all 93 features. The baseline reported a final training loss of 0.5007, while with feature selection, the final training loss was reported as 1.0605 (\autoref{tab:feature-selection}). \autoref{fig:allfeat-curve} and \autoref{fig:selfeat-curve} show the corresponding learning curves.
+
+\subsection{Changing Layer Count in Deep NN}
+
+I compared hidden-layer counts of 1 (baseline), 2, 3, 4, and 5, with all layers 64 units wide and ReLU activations. Just like previous experiments, I kept all other variables constant such as optimizer, learning rate, batch size, and feature set.
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lcccc}
+\hline
+\textbf{Layers} & \textbf{Epochs} & \textbf{Best dev MSE} & \textbf{Final training loss} & \textbf{Training time (s)} \\
+\hline
+1 (baseline) & 1908 & 0.7454 & 0.5007 & 54.20 \\
+2            & 925  & 0.7089 & 0.3407 & 25.12 \\
+3            & 569  & 0.7446 & 0.3505 & 16.54 \\
+4            & 461  & 0.7429 & 0.5544 & 14.54 \\
+5            & 437  & 0.7582 & 0.5023 & 14.22 \\
+\hline
+\end{tabular}
+\caption{Effect of Hidden-Layer Count on Training Performance (SGD, lr=0.001, batch\_size=270, all 93 features).}
+\label{tab:layer-count}
+\end{table}
+
+\begin{figure}[h]
+\centering
+\begin{subfigure}[b]{0.32\textwidth}
+    \centering
+    \includegraphics[width=\textwidth]{1_layer_learningcurve.png}
+    \caption{1 layer (baseline)}
+    \label{fig:layer1-curve}
+\end{subfigure}
+\hfill
+\begin{subfigure}[b]{0.32\textwidth}
+    \centering
+    \includegraphics[width=\textwidth]{2_layer_learningcurve.png}
+    \caption{2 layers}
+    \label{fig:layer2-curve}
+\end{subfigure}
+\hfill
+\begin{subfigure}[b]{0.32\textwidth}
+    \centering
+    \includegraphics[width=\textwidth]{3_layer_learningcurve.png}
+    \caption{3 layers}
+    \label{fig:layer3-curve}
+\end{subfigure}
+
+\medskip
+
+\begin{subfigure}[b]{0.32\textwidth}
+    \centering
+    \includegraphics[width=\textwidth]{4_layer_learningcurve.png}
+    \caption{4 layers}
+    \label{fig:layer4-curve}
+\end{subfigure}
+\hfill
+\begin{subfigure}[b]{0.32\textwidth}
+    \centering
+    \includegraphics[width=\textwidth]{5_layer_learningcurve.png}
+    \caption{5 layers}
+    \label{fig:layer5-curve}
+\end{subfigure}
+\caption{Learning Curves for Hidden-Layer Counts 1 through 5.}
+\label{fig:layers-curves}
+\end{figure}
+
+Adding a second hidden layer produced the best result of the sweep, both in generalization (dev MSE 0.7454 $\to$ 0.7089, an improvement) and in training loss (0.5007 $\to$ 0.3407), while also converging in roughly half the epochs (1908 $\to$ 925) and half the physical time (\autoref{tab:layer-count}). This suggests the single-layer baseline was mildly underfitting and the extra capacity from a second layer lets the network represent the input-output relationship more accurately without overfitting.
+
+Beyond 2 layers, however, performance does not continue to improve the same way. Layers 3, 4, and 5 all converge in fewer epochs than layers 1-2 (569, 461, and 437 respectively) and correspondingly less wall-clock time, but their dev MSE plateaus around 0.74-0.76, which is worse than the 2-layer result. Notably, training loss for 4 and 5 layers is higher than for 2 and 3 layers (0.55 and 0.50 vs.\ 0.34 and 0.35), despite having more parameters and capacity. This suggests that networks with more layers may become harder to optimize with a fixed learning rate and no normalization, rather than converging to a better solution. The faster convergence in the deeper configurations is therefore actually misleading on its own, since it means that the optimizer is plateauing early at a worse loss rather than finding a better minimum.
+
+Overall, 2 hidden layers gave the best generalization performance in this sweep, and is what I will use as the starting point for the BatchNorm comparison in the next section. \autoref{fig:layers-curves} shows the learning curves for all five configurations.
+
+\subsection{Include Batch Norm Based on Best Layer Number}
+
+Using the best performing DNN layer count from the previous question (2 hidden layers), I compared performance with and without BatchNorm inserted after each hidden layer's linear transformation (before the ReLU activation). I also tested BatchNorm combined with a smaller batch size (50) to see if it would improve performance, since BatchNorm is directly involved with batching. Like always, all other variables were kept fixed to what we used in the original baseline.
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lcccc}
+\hline
+\textbf{Configuration} & \textbf{Epochs} & \textbf{Best dev MSE} & \textbf{Final training loss} & \textbf{Training time (s)} \\
+\hline
+No BatchNorm (bs=270)          & 925 & 0.7089 & 0.3407 & 29.89 \\
+BatchNorm (bs=270)             & 391 & 0.7492 & 0.5287 & 11.72 \\
+BatchNorm (bs=50)              & 493 & 0.7714 & 0.5229 & 51.89 \\
+\hline
+\end{tabular}
+\caption{Effect of BatchNorm on training performance, at the best layer count (2 hidden layers, SGD, lr=0.001).}
+\label{tab:batchnorm}
+\end{table}
+
+\begin{figure}[h]
+\centering
+\begin{subfigure}[b]{0.32\textwidth}
+    \centering
+    \includegraphics[width=\textwidth]{without_batchnorm_learningcurve.png}
+    \caption{No BatchNorm, bs=270}
+    \label{fig:nobn-curve}
+\end{subfigure}
+\hfill
+\begin{subfigure}[b]{0.32\textwidth}
+    \centering
+    \includegraphics[width=\textwidth]{with_batchnorm_learningcurve.png}
+    \caption{BatchNorm, bs=270}
+    \label{fig:bn270-curve}
+\end{subfigure}
+\hfill
+\begin{subfigure}[b]{0.32\textwidth}
+    \centering
+    \includegraphics[width=\textwidth]{50_with_batchnorm_learningcurve.png}
+    \caption{BatchNorm, bs=50}
+    \label{fig:bn50-curve}
+\end{subfigure}
+\caption{Learning curves with and without BatchNorm, and with BatchNorm at a smaller batch size.}
+\label{fig:bn-curves}
+\end{figure}
+
+Contrary to the usual expectation that BatchNorm improves training, adding it here made results \emph{worse}: dev MSE rose from 0.7089 to 0.7492 at batch size 270, and training loss similarly increased (0.3407 $\to$ 0.5287). Training also converged in fewer epochs (925 $\to$ 391), but this is because early stopping triggered sooner at a worse plateau rather than having efficiently found a minimum. The same pattern was observed with deeper, unnormalized networks in the layer-count sweep (\autoref{tab:layer-count}). One plausible explanation is that this network is shallow enough (2 layers) and already well-suited to the fixed learning rate that there is little improvement that BatchNorm has left to do.
+
+I then also tried BatchNorm with the smaller batch size of 50 from earlier. This actually degraded performance further (dev MSE 0.7492 $\to$ 0.7714), and the resulting learning curve is incredibly noisy and almost uninterpretable (\autoref{fig:bn50-curve}). This makes sense because BatchNorm only had 50 samples to produce an estimate from during each batch rather than the original 270. That noise therefore gets baked into every activation at each training step, compounding the noise further.
+
+Overall, BatchNorm did not improve performance for this particular model configuration, but its benefit clearly depends on the batch size. Perhaps with a batch size of 500, it would do better.
+
+\subsection{Include Dropout After Batch Norm}
+
+Building on top of the best configuration I found so far (2 hidden layers with BatchNorm), I compared performance with and without Dropout ($p=0.5$) inserted after each hidden layer's BatchNorm/ReLU. Just like before, the other configurable parameters were fixed at their baseline values.
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lcccc}
+\hline
+\textbf{Configuration} & \textbf{Epochs} & \textbf{Best dev MSE} & \textbf{Final training loss} & \textbf{Training time (s)} \\
+\hline
+BatchNorm                        & 391  & 0.7492 & 0.5287 & 11.70 \\
+BatchNorm + Dropout ($p=0.5$)    & 1816 & 1.4663 & 3.9225 & 56.34 \\
+\hline
+\end{tabular}
+\caption{Effect of Dropout on training performance, on top of the BatchNorm configuration (2 hidden layers, SGD, lr=0.001, batch\_size=270).}
+\label{tab:dropout}
+\end{table}
+
+\begin{figure}[h]
+\centering
+\begin{subfigure}[b]{0.48\textwidth}
+    \centering
+    \includegraphics[width=\textwidth]{without_dropout_learningcurve.png}
+    \caption{BatchNorm only (no Dropout)}
+    \label{fig:nodrop-curve}
+\end{subfigure}
+\hfill
+\begin{subfigure}[b]{0.48\textwidth}
+    \centering
+    \includegraphics[width=\textwidth]{with_dropout_learningcurve.png}
+    \caption{BatchNorm + Dropout ($p=0.5$)}
+    \label{fig:drop-curve}
+\end{subfigure}
+\caption{Learning curves with and without Dropout, on top of the BatchNorm configuration.}
+\label{fig:dropout-curves}
+\end{figure}
+
+Adding Dropout made performance substantially worse across every metric: dev MSE rose from 0.7492 to 1.4663, training loss rose from 0.5287 to 3.9225, and training took far longer to plateau (391 $\to$ 1816 epochs). The results and learning curves are depicted respectively in \autoref{tab:dropout} and \autoref{fig:dropout-curves}. There's two likely reasons for this.
+
+First, Dropout with $p=0.5$ removes half of each hidden layer's units on every training step. Since each hidden layer here is only 64 units wide, only about 32 units remain active per step, which is a drastic reduction in usable capacity for a network already this small. A higher training loss under Dropout is expected, since Dropout deliberately prevents the network from using its full capacity at once. The real test is whether this trades off for better generalization, and here it clearly did not, since dev MSE worsened as well as training loss rather than improving relative to it.
+
+Second, there wasn't much overfitting that Dropout needed to correct in the first place. In the BatchNorm-only configuration, training loss (0.5287) and dev MSE (0.7492) were reasonably close, indicating the model was not overfitting to the training set like crazy. While dropout is a tool for closing exactly that kind of gap, using a dropout rate like $p=0.5$ is quite aggressive. When the gap is already small, we end up just discarding useful model capacity for no real compensation.
+
+Overall, the best-performing configuration found across this entire sweep remains the 2-layer network with BatchNorm and without Dropout (dev MSE 0.7492), and 2 layers without either BatchNorm or Dropout performed best of all in isolation (dev MSE 0.7089, \autoref{tab:layer-count}).
+
+\end{document}

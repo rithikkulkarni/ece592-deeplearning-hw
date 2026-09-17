@@ -1,0 +1,98 @@
+\documentclass[10pt]{article}
+
+\usepackage[english]{babel}
+\usepackage[letterpaper,top=1.7cm,bottom=1.7cm,left=2cm,right=2cm,marginparwidth=1.5cm]{geometry}
+\usepackage{titlesec}
+\titlespacing*{\section}{0pt}{8pt}{4pt}
+\titlespacing*{\subsection}{0pt}{6pt}{2pt}
+\usepackage{amsmath}
+\usepackage{graphicx}
+\usepackage[colorlinks=true, allcolors=blue]{hyperref}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{enumitem}
+\usepackage{listings}
+\usepackage{subcaption}
+
+\lstset{
+    basicstyle=\ttfamily\small,
+    breaklines=true,
+    frame=single,
+    columns=fullflexible
+}
+\setlist{noitemsep, topsep=2pt}
+
+\title{Homework 2: ECE 592 Adv. Topics in Efficient Deep Learning}
+\author{Authored by Rithik Kulkarni}
+\date{}
+
+\begin{document}
+\maketitle
+\vspace{-1.5em}
+
+\begin{lstlisting}[caption={Questions}, label={lst:questions}]
+## Question 1: Augmentation Implementation
+- Implement augmentation by finishing train_tfm in the code with image size of
+  your choice. Explain the effects of transformations in your report.
+- Your train_tfm must be capable of producing 5+ different results when given
+  an identical image multiple times.
+- Your train_tfm in the report can be different from train_tfm in your
+  training code.
+
+## Question 2: Visual Representations Implementation
+- Visualize the learned visual representations of the CNN model on the
+  validation set by implementing t-SNE on the output of both top & mid layers
+  (2 images required).
+- Briefly explain your result of the t-SNE visualization.
+
+## Submission Requirement
+- Include the final accuracy achieved in the report.
+\end{lstlisting}
+
+\begin{quote}
+    \textit{\textbf{Note: this report is drafted alongside implementation and is currently a work in progress. Question 2 (t-SNE) and the Final Accuracy section are marked TODO below, pending completion of baseline model training (Phase 4) and the t-SNE visualization step (Phase 5).}}
+\end{quote}
+
+\section{Question 1}
+
+I implemented \texttt{train\_tfm} by stacking four augmentation transforms on top of the required resize/tensor conversion, resizing to $128\times128$ (matching the sample code's default, so no changes were needed to the classifier's flattened input dimension):
+
+\begin{lstlisting}[caption={Final train\_tfm}, label={lst:train-tfm}]
+train_tfm = transforms.Compose([
+    transforms.RandomResizedCrop(128, scale=(0.7, 1.0)),
+    transforms.RandomHorizontalFlip(),
+    transforms.RandomRotation(15),
+    transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2),
+    transforms.ToTensor(),
+])
+\end{lstlisting}
+
+To confirm this concretely satisfies the "5+ different results" requirement rather than just assuming the transforms are random enough, I applied \texttt{train\_tfm} to the same training image 5 times and plotted the results alongside the original (\autoref{fig:aug-grid}). I additionally computed the pairwise mean absolute difference between all 5 output tensors, which ranged from 0.07 to 0.20 -- confirming every pair is meaningfully distinct rather than near-duplicate.
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=\textwidth]{q1_augmentation_grid.png}
+    \caption{Original training image (leftmost) and 5 independent applications of train\_tfm to it.}
+    \label{fig:aug-grid}
+\end{figure}
+
+Each transform in the stack targets a distinct source of overfitting:
+
+\begin{itemize}
+    \item \textbf{RandomResizedCrop} randomly crops a sub-region (70--100\% of the image area) before resizing to $128\times128$. This teaches the model that a food class shouldn't depend on the object being perfectly centered or filling the whole frame, countering overfitting to the exact framing/composition of the training photos.
+    \item \textbf{RandomHorizontalFlip} mirrors the image left-right with 50\% probability. Food photos have no canonical "handedness," so this teaches left-right invariance for free and effectively doubles the visual variety of each image across training epochs.
+    \item \textbf{RandomRotation(15)} rotates the image by up to $\pm15^\circ$. This counters overfitting to the exact camera angle/tilt a photo happened to be taken at. A small angle range was chosen deliberately to avoid distorting food identity, unlike larger rotations (e.g. $90^\circ$) which could make some dishes look unnatural or ambiguous.
+    \item \textbf{ColorJitter} randomly perturbs brightness, contrast, and saturation. This counters overfitting to the specific lighting conditions and white balance of individual photos, which matters significantly for a food dataset where lighting and photography source vary a lot across images.
+\end{itemize}
+
+Note that \texttt{transforms.Compose} applies all four transforms every call, in the same fixed order -- nothing is randomly skipped at the transform level (with the partial exception of \texttt{RandomHorizontalFlip}'s internal coin flip). The visible diversity in \autoref{fig:aug-grid} instead comes from each transform independently drawing new random parameters (crop region, rotation angle, jitter factors) on every call.
+
+\section{Question 2}
+
+\textit{TODO -- pending Phase 5 (t-SNE visualization of mid- and top-layer representations on the validation set). Will be completed once a trained model checkpoint is available from Phase 4 baseline training.}
+
+\section{Final Accuracy}
+
+\textit{TODO -- pending completion of the baseline tiers (Phase 4: Simple $\to$ Medium $\to$ Strong $\to$ Boss). Will report the best validation/test accuracy achieved and which baseline tier(s) it clears, per the assignment's explicit submission requirement.}
+
+\end{document}
