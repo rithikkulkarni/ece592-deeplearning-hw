@@ -285,6 +285,276 @@ epoch 8, so giving it room to actually converge toward the Simple tier.
 | Seed | 6666 | no |
 | Platform | Kaggle (GPU), via `kaggle_sync.py run` | no |
 
+**Result:** best validation accuracy 0.658 (epoch 25/30) — **clears Simple tier
+(0.637)**, does not clear Medium (0.700). Ran full 30 epochs, no early stop. Mild
+overfitting visible by epoch 30 (train acc 0.715 vs valid acc 0.643). Full per-epoch
+breakdown in `report2.md`.
+
+### exp_3
+
+Strong tier attempt — swapped `Classifier` (from-scratch 5-block CNN) for
+`build_model()` (ResNet18, `weights=None`, no pretrained weights). exp_2 plateaued
+with a widening train/valid gap, suggesting the bottleneck had shifted from epoch
+count to architecture capacity. Short sanity run (10 epochs) to confirm the new
+architecture trains correctly on Kaggle before committing to a long run (PDF
+reference: 10-12hr for Strong vs. 1.5-2hr for Medium).
+
+| Variable | Value | Changed from exp_2? |
+|---|---|---|
+| Image size | 128×128 | no |
+| `train_tfm` | same as exp_2 | no |
+| `test_tfm` | same as exp_2 | no |
+| Model | ResNet18 (`weights=None`, final FC → 11 classes) | **yes** (was `Classifier`) |
+| Batch size | 64 | no |
+| `n_epochs` | 10 | yes (was 30) |
+| `patience` | 5 | yes (was 8) |
+| Optimizer | Adam, lr=0.0003, weight_decay=1e-5 | no |
+| Loss | CrossEntropyLoss | no |
+| Seed | 6666 | no |
+| Platform | Kaggle (GPU), via `kaggle_sync.py run` | no |
+
+**Result:** best validation accuracy 0.551 (epoch 10/10 — new best on the last epoch,
+no plateau yet). Sanity check succeeded: ResNet18 trains cleanly end-to-end on Kaggle.
+Next: longer follow-up run targeting Strong tier (0.814). Full breakdown in `report2.md`.
+
+### exp_4
+
+Real Strong-tier run — same ResNet18 as exp_3, `n_epochs`/`patience` bumped now that
+the sanity check confirmed it trains cleanly with no plateau at epoch 10. exp_3's pace
+(~88.5s/epoch, nearly identical to exp_2's CNN) puts this at ~59min of real training.
+
+| Variable | Value | Changed from exp_3? |
+|---|---|---|
+| Image size | 128×128 | no |
+| `train_tfm` | same as exp_3 | no |
+| `test_tfm` | same as exp_3 | no |
+| Model | ResNet18 (`weights=None`, final FC → 11 classes) | no |
+| Batch size | 64 | no |
+| `n_epochs` | 40 | yes (was 10) |
+| `patience` | 10 | yes (was 5) |
+| Optimizer | Adam, lr=0.0003, weight_decay=1e-5 | no |
+| Loss | CrossEntropyLoss | no |
+| Seed | 6666 | no |
+| Platform | Kaggle (GPU), via `kaggle_sync.py run` | no |
+
+**Result:** best validation accuracy 0.691 (epoch 37/40, full run, no early stop). Misses
+Medium (0.700) by ~0.009, well short of Strong (0.814), but clears exp_2's 0.658.
+Validation curve notably noisier than exp_2's — possible untuned-LR symptom (lr=0.0003
+inherited unchanged from the from-scratch CNN, never re-tuned for ResNet18). Full
+breakdown in `report2.md`.
+
+### exp_5
+
+Combined fix — same ResNet18 as exp_4, but lr lowered 0.0003→0.0001 (targeting the
+epoch-to-epoch validation noise seen in exp_4) and n_epochs bumped 40→60 at the same
+time. Not an isolated ablation (both changed together, for time cost reasons), so a
+follow-up may be needed to attribute which change did what if this helps.
+
+| Variable | Value | Changed from exp_4? |
+|---|---|---|
+| Image size | 128×128 | no |
+| `train_tfm` | same as exp_4 | no |
+| `test_tfm` | same as exp_4 | no |
+| Model | ResNet18 (`weights=None`, final FC → 11 classes) | no |
+| Batch size | 64 | no |
+| `n_epochs` | 60 | yes (was 40) |
+| `patience` | 15 | yes (was 10) |
+| Optimizer | Adam, **lr=0.0001**, weight_decay=1e-5 | **yes** (lr was 0.0003) |
+| Loss | CrossEntropyLoss | no |
+| Seed | 6666 | no |
+| Platform | Kaggle (GPU), via `kaggle_sync.py run` | no |
+
+**Result:** best validation accuracy 0.680 (epoch 48/60) — *lower* than exp_4's 0.691
+despite 50% more epochs. Lower LR did reduce late-epoch volatility ~44% (avg abs
+epoch-to-epoch change 0.0146 vs exp_4's 0.0262) but didn't improve accuracy — instability
+not fully explained by LR alone. Full breakdown in `report2.md`.
+
+### exp_6
+
+Regularization run — exp_4/exp_5's real finding was a widening train/valid accuracy
+gap (overfitting), not just epoch-to-epoch noise. Added `nn.Dropout(p=0.3)` before the
+final FC layer (torchvision's resnet18 has no dropout by default) and bumped
+`weight_decay` 1e-5→1e-4. `lr` kept at exp_5's 0.0001 (not re-touched) to isolate
+regularization as this run's variable. `n_epochs`/`patience` kept at exp_5's 60/15.
+
+| Variable | Value | Changed from exp_5? |
+|---|---|---|
+| Image size | 128×128 | no |
+| `train_tfm` | same as exp_5 | no |
+| `test_tfm` | same as exp_5 | no |
+| Model | ResNet18 (`weights=None`) + `Dropout(p=0.3)` before final FC | **yes** (dropout added) |
+| Batch size | 64 | no |
+| `n_epochs` | 60 | no |
+| `patience` | 15 | no |
+| Optimizer | Adam, lr=0.0001, **weight_decay=1e-4** | **yes** (weight_decay was 1e-5) |
+| Loss | CrossEntropyLoss | no |
+| Seed | 6666 | no |
+| Platform | Kaggle (GPU), via `kaggle_sync.py run` | no |
+
+**Result:** best validation accuracy 0.679 (epoch 59/60) — essentially unchanged from
+exp_5's 0.680 (very slightly lower). Train/valid gap still widened to similar magnitude
+(~0.05-0.14 in later epochs). Moderate dropout+weight_decay dosage didn't meaningfully
+counteract overfitting. Full breakdown in `report2.md`.
+
+### exp_7
+
+Stronger dosage — exp_6's moderate regularization (dropout=0.3, weight_decay=1e-4)
+barely moved accuracy or the train/valid gap, so pushing both considerably higher:
+dropout=0.5, weight_decay=1e-3. `lr`/`n_epochs`/`patience` kept at exp_6's
+0.0001/60/15 unchanged, to isolate dosage as this run's only variable.
+
+| Variable | Value | Changed from exp_6? |
+|---|---|---|
+| Image size | 128×128 | no |
+| `train_tfm` | same as exp_6 | no |
+| `test_tfm` | same as exp_6 | no |
+| Model | ResNet18 (`weights=None`) + `Dropout(p=0.5)` before final FC | **yes** (was p=0.3) |
+| Batch size | 64 | no |
+| `n_epochs` | 60 | no |
+| `patience` | 15 | no |
+| Optimizer | Adam, lr=0.0001, **weight_decay=1e-3** | **yes** (weight_decay was 1e-4) |
+| Loss | CrossEntropyLoss | no |
+| Seed | 6666 | no |
+| Platform | Kaggle (GPU), via `kaggle_sync.py run` | no |
+
+**Result:** best validation accuracy 0.7073 (epoch 58/60) — **clears Medium tier
+(0.700) for the first time.** Train/valid gap stayed ~0.03-0.06 in later epochs (vs.
+exp_6's ~0.05-0.14) — stronger dosage measurably reduced overfitting and delivered a
+real accuracy gain. Confirms dosage (not approach) was the issue in exp_6. Full
+breakdown in `report2.md`.
+
+### exp_8
+
+Boss-tier attempt — cross-validation + ensembling. Pooled `train/` + `valid/`
+(13,643 images) and split into 3 folds (true k-fold: each fold rotates which
+slice is held out, not just a different seed on the same fixed split). Same
+recipe as exp_7 (ResNet18, dropout=0.5, weight_decay=1e-3, lr=0.0001, 60/15)
+reused unchanged across all 3 folds — diversity comes from the data split, not
+the recipe. Each fold trains independently (fresh model/optimizer) and saves
+its own checkpoint (`exp_8_fold{0,1,2}_best.ckpt`). Final prediction averages
+softmax probabilities across all 3 fold models, then argmax.
+
+Smoke-tested locally first (tiny subset, 1 epoch/fold) — caught and fixed a
+real edge case: `best_acc` starting at `0` meant a fold scoring exactly `0.0`
+accuracy on its first epoch would never save a checkpoint, crashing the
+ensembling step after that fold's full training time was already spent.
+Fixed by starting `best_acc` at `-1.0` instead.
+
+| Variable | Value | Changed from exp_7? |
+|---|---|---|
+| Image size | 128×128 | no |
+| `train_tfm` | same as exp_7 | no |
+| `test_tfm` | same as exp_7 | no |
+| Model | ResNet18 (`weights=None`) + `Dropout(p=0.5)`, ×3 independent folds | **yes** (single model → 3-fold ensemble) |
+| Data split | 3-fold CV over pooled train+valid (13,643 images) | **yes** (was fixed 10000/3643 split) |
+| Batch size | 64 | no |
+| `n_epochs` | 60 (per fold) | no |
+| `patience` | 15 (per fold) | no |
+| Optimizer | Adam, lr=0.0001, weight_decay=1e-3 | no |
+| Loss | CrossEntropyLoss | no |
+| Seed | 6666 | no |
+| Prediction | averaged softmax probabilities across 3 folds | **yes** (was single-model argmax) |
+| Platform | Kaggle (GPU), via `kaggle_sync.py run` | no |
+
+Expected real execution: ~3× a single run at exp_7's pace (~285 min / 4.75hr),
+before queue time.
+
+**Result:** per-fold best valid accuracy: fold0=0.7055 (epoch 60), fold1=0.6951
+(epoch 60), fold2=0.6886 (epoch 54) — average ≈0.696, slightly below exp_7's single
+0.7073. **Cannot measure the ensemble's own accuracy locally** — no clean held-out
+set remains after pooling all labeled data into folds, since each image was excluded
+from only 1 of 3 folds' training. `submission.csv` generated (3000 rows, verified) but
+whether ensembling actually helped is only knowable via submission-based scoring.
+Full breakdown in `report2.md`.
+
+### exp_9
+
+Fixes exp_8's measurement gap. Confirmed with the user: there is no external
+grading/leaderboard for this assignment — the instructor runs the submitted notebook
+themselves to generate `submission.csv` and scores it against hidden labels we never
+see. Validation accuracy is therefore the *only* feedback signal available, which
+makes exp_8's inability to measure the ensemble's own accuracy a real problem, not
+just a nice-to-have.
+
+Only fold-splits the original `./train` (10,000 images) into 3 folds — `./valid`
+(3,643 images) is deliberately excluded from all fold splits and never trained on by
+any fold, staying a clean holdout. Same recipe as exp_7/exp_8 (ResNet18, dropout=0.5,
+weight_decay=1e-3, lr=0.0001, 60 epochs/patience 15), unchanged. Added a new
+evaluation cell after training that measures each fold *and* the ensemble (averaged
+softmax) on that untouched `./valid` set — directly comparable to exp_7's 0.70730 on
+the same data. Locally verified before pushing: fold splits confirmed to have zero
+overlap with `./valid`, and holdout label parsing confirmed correct (3,643 labels,
+range 0-10, zero parse failures) against the real data.
+
+| Variable | Value | Changed from exp_8? |
+|---|---|---|
+| Image size | 128×128 | no |
+| `train_tfm` | same as exp_8 | no |
+| `test_tfm` | same as exp_8 | no |
+| Model | ResNet18 (`weights=None`) + `Dropout(p=0.5)`, ×3 independent folds | no |
+| Data split | 3-fold CV over `./train` only (10,000 images); `./valid` held out | **yes** (was pooled train+valid, 13,643) |
+| Batch size | 64 | no |
+| `n_epochs` | 60 (per fold) | no |
+| `patience` | 15 (per fold) | no |
+| Optimizer | Adam, lr=0.0001, weight_decay=1e-3 | no |
+| Loss | CrossEntropyLoss | no |
+| Seed | 6666 | no |
+| Evaluation | each fold + ensemble measured on untouched `./valid` | **yes** (new — exp_8 had no way to do this) |
+| Prediction | averaged softmax probabilities across 3 folds | no |
+| Platform | Kaggle (GPU), via `kaggle_sync.py run` | no |
+
+Expected real execution: ~4.75hr (same as exp_8), before queue time.
+
+**Result:** per-fold accuracy on the untouched `./valid` holdout: fold0=0.64782,
+fold1=0.62394, fold2=0.59155 (early-stopped at epoch 47/60). **Ensemble (avg of 3
+folds) = 0.67582.** Compare to exp_7's single-model 0.70730 on the same holdout —
+**the ensemble underperformed the single model by ~0.031, and every individual fold
+was also worse than exp_7.** With the measurement gap fixed, this is a fair,
+directly comparable answer: 3-fold CV + ensembling did not help here.
+
+Most likely cause: each fold trained on only ~6,667 images (2/3 of `./train`), vs.
+exp_7's full 10,000 — less training data per fold plausibly cost more accuracy than
+3-way averaging recovered. Fold 2 also hit early stopping before using its full
+epoch budget. (Kaggle kernel status showed `ERROR` after this cell — traced to the
+already-known, pre-flagged Q2/t-SNE placeholder cell failing on `model.cnn`, which
+doesn't exist on `ResNet`; unrelated to this result. All fold checkpoints and
+`submission.csv` were produced successfully before that.)
+
+Decision (discussed with user): given exp_9's result, and that even exp_7's 0.707
+is still well short of Strong (0.814)/Boss (0.874), dropping the CV/ensembling
+approach for now in favor of scaling up the single model — see exp_10.
+
+---
+
+### exp_10
+
+Ensembling (exp_8/exp_9) didn't beat the single model, and the bigger gap is
+Strong/Boss tier being far out of reach regardless (exp_7's single-model best is
+0.707, vs. 0.814/0.874 targets). Going back to a single model, but scaling it up:
+ResNet34 (deeper than exp_7's ResNet18) + a longer training budget. dropout=0.5,
+weight_decay=1e-3, lr=0.0001 kept identical to exp_7 so architecture+epoch count
+are the only *intentional* changes — though changing both at once means any result
+can't be cleanly attributed to one or the other (accepted for time cost; flagged to
+the user before running).
+
+| Variable | Value | Changed from exp_7? |
+|---|---|---|
+| Image size | 128×128 | no |
+| `train_tfm` | same as exp_7 | no |
+| `test_tfm` | same as exp_7 | no |
+| Model | ResNet34 (`weights=None`) + `Dropout(p=0.5)`, single model | **yes** (was ResNet18) |
+| Data split | fixed `./train` (10,000) / `./valid` (3,643), no CV | **yes** (back from exp_8/exp_9's fold-splitting) |
+| Batch size | 64 | no |
+| `n_epochs` | 150 | **yes** (was 60) |
+| `patience` | 25 | **yes** (was 15) |
+| Optimizer | Adam, lr=0.0001, weight_decay=1e-3 | no |
+| Loss | CrossEntropyLoss | no |
+| Seed | 6666 | no |
+| Prediction | single-model argmax (no ensembling) | **yes** (back from exp_8/exp_9's averaged softmax) |
+| Platform | Kaggle (GPU), via `kaggle_sync.py run` | no |
+
+Pushed as kernel version 12. Result pending.
+
 ---
 
 ## Quick Reference: Phase Dependencies

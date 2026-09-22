@@ -53,7 +53,13 @@ def status() -> str:
 
 def pull(output_dir: Path) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
-    run_cli(["kernels", "output", kernel_id(), "-p", str(output_dir)])
+    # Exclude food11.zip: it's re-created by the notebook's own download cell on
+    # every Kaggle run, and re-pulling the full 1.1GB copy each time is slow and
+    # unnecessary since we already have the dataset locally.
+    run_cli([
+        "kernels", "output", kernel_id(), "-p", str(output_dir),
+        "--file-pattern", r"^(?!food11\.zip$).*",
+    ])
 
 
 def wait_until_done(poll_interval: int, timeout: int) -> None:

@@ -30,7 +30,7 @@
 \maketitle
 \vspace{-1.5em}
 
-\begin{lstlisting}[caption={Questions}, label={lst:questions}]
+\begin{lstlisting}[caption={Assignment Questions}, label={lst:questions}]
 ## Question 1: Augmentation Implementation
 - Implement augmentation by finishing train_tfm in the code with image size of
   your choice. Explain the effects of transformations in your report.
@@ -49,50 +49,156 @@
 - Include the final accuracy achieved in the report.
 \end{lstlisting}
 
-\begin{quote}
-    \textit{\textbf{Note: this report is drafted alongside implementation and is currently a work in progress. Question 2 (t-SNE) and the Final Accuracy section are marked TODO below, pending completion of baseline model training (Phase 4) and the t-SNE visualization step (Phase 5).}}
-\end{quote}
+\section{Data Augmentation Implementation (Question 1)}
 
-\section{Question 1}
-
-I implemented \texttt{train\_tfm} by stacking four augmentation transforms on top of the required resize/tensor conversion, resizing to $128\times128$ (matching the sample code's default, so no changes were needed to the classifier's flattened input dimension):
+I implemented \texttt{train\_tfm} by layering four augmentation transforms on top of the required resize/tensor conversion, resizing to $128\times128$ (matching the sample code's default, so no changes were needed to the classifier's flattened input dimension):
 
 \begin{lstlisting}[caption={Final train\_tfm}, label={lst:train-tfm}]
 train_tfm = transforms.Compose([
-    transforms.RandomResizedCrop(128, scale=(0.7, 1.0)),
+    transforms.RandomResizedCrop(128, scale=(0.5, 1.0)),
     transforms.RandomHorizontalFlip(),
-    transforms.RandomRotation(15),
-    transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2),
+    transforms.RandomRotation(35),
+    transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.4, hue=0.1),
     transforms.ToTensor(),
 ])
 \end{lstlisting}
 
-To confirm this concretely satisfies the "5+ different results" requirement rather than just assuming the transforms are random enough, I applied \texttt{train\_tfm} to the same training image 5 times and plotted the results alongside the original (\autoref{fig:aug-grid}). I additionally computed the pairwise mean absolute difference between all 5 output tensors, which ranged from 0.07 to 0.20 -- confirming every pair is meaningfully distinct rather than near-duplicate.
+In order to confirm that this process fulfilled the requirements of having 5+ visibly different results, I provided an example of applying \texttt{train\_tfm} to one training image 5 times. The results of this application are depicted in \autoref{fig:aug-grid}. In addition, to make sure that the variance in these images are not only visibly but also metrically significant, I computed the mean absolute difference (pairwise) between all 5 of the output tensors that the transformation process gave, and the range of these differences was 0.12-0.30. This confirms that each pair is significantly different from one another, instead of being trivially adjusted.
 
 \begin{figure}[htbp]
     \centering
     \includegraphics[width=\textwidth]{q1_augmentation_grid.png}
-    \caption{Original training image (leftmost) and 5 independent applications of train\_tfm to it.}
+    \caption{Original image (leftmost) and the 5 independent applications of \texttt{train\_tfm.}}
     \label{fig:aug-grid}
 \end{figure}
 
-Each transform in the stack targets a distinct source of overfitting:
+Each of the four individual transformations that I've layered in \texttt{train\_tfm} target a different potential source of overfitting, and are all pulled directly from the \texttt{torchvision.transforms} library:
 
 \begin{itemize}
-    \item \textbf{RandomResizedCrop} randomly crops a sub-region (70--100\% of the image area) before resizing to $128\times128$. This teaches the model that a food class shouldn't depend on the object being perfectly centered or filling the whole frame, countering overfitting to the exact framing/composition of the training photos.
-    \item \textbf{RandomHorizontalFlip} mirrors the image left-right with 50\% probability. Food photos have no canonical "handedness," so this teaches left-right invariance for free and effectively doubles the visual variety of each image across training epochs.
-    \item \textbf{RandomRotation(15)} rotates the image by up to $\pm15^\circ$. This counters overfitting to the exact camera angle/tilt a photo happened to be taken at. A small angle range was chosen deliberately to avoid distorting food identity, unlike larger rotations (e.g. $90^\circ$) which could make some dishes look unnatural or ambiguous.
-    \item \textbf{ColorJitter} randomly perturbs brightness, contrast, and saturation. This counters overfitting to the specific lighting conditions and white balance of individual photos, which matters significantly for a food dataset where lighting and photography source vary a lot across images.
+    \item \textbf{RandomResizedCrop} randomly cuts out (crops) some part of the image, which I've set to be 50-100\% of the image area, and then resizes what is left of the image back to $128\times128$. This aids the model by preventing it from becoming dependent on the important object in the image being perfectly centered or taking up the entire frame of the image. This helps counter overfitting to the exact composition of training images.
+    \item \textbf{RandomHorizontalFlip} simply mirrors the image randomly with a 50\% probability (coin flip). Since photos of food have no dependence on being flipped left or right (they're still the same thing no matter the angle), this randomized flip aims at helping the model being left-right invariant.
+    \item \textbf{RandomRotation(35)} rotates the image by up to $\pm35^\circ$. This aims to help counter the model overfitting to the exact camera angle or tilt that its training images happened to be taken at. I purposefully chose a relatively small range for the angle so I could avoid accidentally distorting the identity of the food, since larger angles like a $90^\circ$ tilt could make things look entirely unnatural.
+    \item \textbf{ColorJitter} will randomly perturb/mess with the brightness, constrast, saturation, and the hue of the image. This aims to prevent the model overfitting to specific lighting conditions or the whiteness balance of certain images. Since images of food can drastically vary in brightness and lighting, we want to help the model adapt to that in training.
 \end{itemize}
 
-Note that \texttt{transforms.Compose} applies all four transforms every call, in the same fixed order -- nothing is randomly skipped at the transform level (with the partial exception of \texttt{RandomHorizontalFlip}'s internal coin flip). The visible diversity in \autoref{fig:aug-grid} instead comes from each transform independently drawing new random parameters (crop region, rotation angle, jitter factors) on every call.
+The function \texttt{transforms.Compose}, which triggers the transformation, applies all four transforms every call in the same fixed order. None of the transformations are randomly skipped, except for the chance that \texttt{RandomHorizontalFlip}'s coin flip results in no change to the image. The only variance introduced in this process comes from each of the transformations having their own individual random parameters that are applied within each of the four layers.
 
-\section{Question 2}
+\section{Achieving Baselines (Enhancing Accuracy)}
 
-\textit{TODO -- pending Phase 5 (t-SNE visualization of mid- and top-layer representations on the validation set). Will be completed once a trained model checkpoint is available from Phase 4 baseline training.}
+\subsection{Initial Experimentation}
 
-\section{Final Accuracy}
+After implementing data augmentation as described above, I ran my Experiment 1 in an attempt to understand where I was at in comparison to the 4 primary baselines listed in the assignment instructions. Using the default epoch count of 8, I ran an experiment on Kaggle's T4 GPU using the sample code's defaults left unchanged (batch size of 64, Adam optimizer with a learning rate of 0.0003). This run reflects the sample architecture with only the addition of the data augmentation from Q1, so no deliberate tuning has been done for this experiment (\autoref{fig:exp1}).
 
-\textit{TODO -- pending completion of the baseline tiers (Phase 4: Simple $\to$ Medium $\to$ Strong $\to$ Boss). Will report the best validation/test accuracy achieved and which baseline tier(s) it clears, per the assignment's explicit submission requirement.}
+\begin{figure}[h]
+    \centering
+    \includegraphics[width=0.5\textwidth]{exp1_curve.png}
+    \caption{Experiment 1: training vs. validation accuracy per epoch.}
+    \label{fig:exp1}
+\end{figure}
+
+Experiment 1 achieved a best validation accuracy of 0.496 at epoch 7, which falls very short of even the Simple baseline described by the assignment instructions (0.637). This is likely due to the low epoch count, as both the training and validation losses were still steadily decreasing all the way through epoch 8. An epoch count of 8 was simply too short. Since augmentation has the known tradeoff of gaining better generalization with slower convergence, it makes sense that we'd observe these results with so few epochs.
+
+To put this to the test, I performed another experiment (Experiment 2) with the same exact configuration as Experiment 1, but with the epoch count raised to 30 and the patience value raised from 5 to 8. I chose to also increase the patience value because the validation accuracy in Experiment 1 was quite noisy between epochs, which meant that the low patience value could have risked an early stop to trigger on some temporary dip rather than a true convergence/plateau.
+
+\begin{figure}[h]
+    \centering
+    \includegraphics[width=0.5\textwidth]{exp2_curve.png}
+    \caption{Experiment 2: training vs. validation accuracy per epoch.}
+    \label{fig:exp2}
+\end{figure}
+
+Experiment 2 did much better, reaching a best validation accuracy of 0.658 at epoch 25 (\autoref{fig:exp2}). This clears the Simple baseline of 0.637, but doesn't quite achieve the Medium baseline of 0.700. For experiment 2, the full 30 epochs ran without reaching an early stop trigger. The longest streak without a new best was in the last 5 epochs. Despite this being decently under the patience of 8, the last 10 epochs together were all stuck in a validation accuracy between roughly 0.61 and 0.66 without any signal that it would continue upward. Additionally, the training accuracy kept increasing steadily, which meant that the gap between training and validation accuracy eventually reached 0.715 to 0.643. This is a sign that in the later epochs, the model gradually began to overfit.
+
+Since I've already done data augmentation, I wanted to try and reach the Medium baseline before continuing with other architecture changes; however, since the later epochs showed signs of overfitting, I realized that adding more epochs would not help, and the model architecture may be the bottleneck here.
+
+\subsection{New Architecture: ResNet18}
+
+Next, I took the suggestion for reaching the strong baseline and swapped in a predefined architecture rather than continuing to tune a CNN from scratch. Experiment 3 shows results from running a ResNet18 from \texttt{torchvision.models} with no pretrained weights. I kept all other configurations from Experiment 2 except epoch count and patience, which I switched to 40 and 10 respectively.
+
+\begin{figure}[h]
+    \centering
+    \includegraphics[width=0.5\textwidth]{exp3_curve.png}
+    \caption{Experiment 3 (ResNet18): training vs. validation accuracy per epoch.}
+    \label{fig:exp3}
+\end{figure}
+
+This experiment reached an overall best validation accuracy of 0.691, which is almost at the Medium baseline. This is a clear improvement over 0.658 from Experiment 2. One important observation is that Experiment 3's validation accuracy seemed to fluctuate a lot even in the later epochs (for example, 0.685 to 0.652 in epochs 31-32 and 0.633 to 0.683 in epochs 35-36) (\autoref{fig:exp3}).
+
+Since I never tuned the learning rate from when we were training a CNN from scratch, this learning rate could be too high for the batch normalization and residual connections that ResNet18 has built into its architecture. This is the most likely explanation I came up with for this observation.
+
+\subsection{Further Tuning: Learning Rate}
+
+After observing large fluctuations in validation accuracy from epoch to epoch in the last experiment, I decided to lower the learning rate from 0.0003 (sample default) to 0.0001. Additionally, I raised the epoch count from 40 to 60 and raised patience from 10 to 15 so I could see how the model does with more time.\
+
+\begin{figure}[h]
+    \centering
+    \includegraphics[width=0.5\textwidth]{exp4_curve.png}
+    \caption{Experiment 4 (ResNet18, lr=0.0001): training vs. validation accuracy per epoch.}
+    \label{fig:exp4}
+\end{figure}
+
+Experiment 4 reached a best validation accuracy of 0.680 at epoch 48 (\autoref{fig:exp4}). Surprisingly, slightly \emph{lower} than Experiment 3, despite running 20\% more epochs. The training ran the full 60 epochs without hitting an early stop trigger.
+
+To check metrically if the lower learning rate actually helped with the instability I observed in the last experiment, I calculated the absolute average epoch-to-epoch change over the last 30 epochs. This absolute average change came out to be 0.0146, which is better than the previous experiment's 0.0262 (roughly a 44\% decrease). This means that the learning rate seems to have reduced the instability, but convergence is slower.
+
+The real issue here is that the model seems to be overfitting in the later epochs. The training accuracy increased steadily the entire time up to 0.779, but the validation accuracy start flatlining in the 0.62-0.68 range for a long time. This is a significant gap in training and validation accuracy that signals the model is overfitting.
+
+\subsection{Regularization: Dropout and Weight Decay}
+
+To try and fight the overfitting, I decided to add dropout of 0.3 and raised the weight decay from 1e-5 to 1e-4 in the optimizer. I kept other parameters such as the learning rate of 0.0001 and the epoch count/patience of 60/15 unchanged. This way, I can see if regularization actually helps.
+
+\begin{figure}[h]
+    \centering
+    \includegraphics[width=0.5\textwidth]{exp5_curve.png}
+    \caption{Experiment 5 (ResNet18, dropout=0.3, weight\_decay=1e-4): training vs. validation accuracy per epoch.}
+    \label{fig:exp5}
+\end{figure}
+
+Experiment 5 achieved a best validation accuracy of 0.679 near the end at epoch 59 (\autoref{fig:exp5}). This is almost identical to the best accuracy from Experiment 4, even though I added dropout and a stronger weight decay. It seems that at this medium dose, regularization was unable to improve peak accuracy.
+
+It also did not seem to fix the overfitting issue. The training accuracy still continued to climb higher while validation accuracy plateaued. The final gap at epoch 60 was comparable to the same gap in Experiment 4.
+
+This signals that perhaps the dropout were too little to have some meaningful effect in countering the overfitting problem. The next step is to be more aggressive with the regularization and see if that helps.
+
+\subsection{Stronger Regularization}
+
+For Experiment 6, I raised the dropout from 0.3 to 0.5 and weight decay from 1e-4 to 1e-3 (another 10x) to potentially address the accuracy and overfitting issues. All of the other parameters from before were kept the same.
+
+\begin{figure}[h]
+    \centering
+    \includegraphics[width=0.5\textwidth]{exp6_curve.png}
+    \caption{Experiment 6 (ResNet18, dropout=0.5, weight\_decay=1e-3): training vs. validation accuracy per epoch. Dashed green line marks the Medium baseline (0.700).}
+    \label{fig:exp6}
+\end{figure}
+
+This experiment achieved a best validation accuracy of 0.707 at epoch 58 (\autoref{fix:exp6}). This is the first time I've cleared the Medium baseline across any of my prior experiments.
+
+It seems that this time, the stronger regularization did what it was actually supposed to do. The gap between training and validation accuracy stayed smaller throughout all of training. This confirms what I suspected after observing Experiment 5.
+
+Despite having made some progress here, though, there is still a long way to go before the Strong and Boss baselines. Some different techniques may have to be introduced to achieve this.
+
+\subsection{Cross Validation}
+
+For my next experiment, it seemed I needed to try something new. I decided to do a 3-fold cross validation on just the training set (10,000 samples) and create an ensemble out of the 3 individual models. The final ensemble would then be tested on the validation set of 3,643 samples to judge its final validation accuracy.
+
+This cross validation is an attempt at adding variance to the model to catch case samples that otherwise wouldn't be caught.
+
+I kept the same recipe as Experiment 6 (ResNet18, dropout=0.5, weight\_decay=1e-3, lr=0.0001, 60 epochs/patience 15) unchanged across all 3 folds, so any difference would come from the data split rather than the training configuration. Each fold trains its own model from scratch on its $\frac{2}{3}$ share of the 10,000 training images and validates on the remaining $\frac{1}{3}$ (\autoref{fig:exp9}). Once all 3 folds finished training, I evaluated each fold's model, along with the ensemble of all 3 (averaging their predicted class probabilities together before taking the final class), on the untouched 3,643-image validation set -- the same validation set that produced Experiment 6's 0.707 result, so the comparison is apples-to-apples.
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=\textwidth]{exp9_curve.png}
+    \caption{3-fold cross-validation: training vs. fold-validation accuracy per epoch for each of the 3 folds. Fold 2 triggered early stopping at epoch 47.}
+    \label{fig:exp9}
+\end{figure}
+
+The individual fold accuracies on the held-out validation set were 0.648 (fold 0), 0.624 (fold 1), and 0.592 (fold 2), and the ensemble of all 3 (averaged probabilities) reached 0.676. Every single one of these numbers is worse than Experiment 6's single-model result of 0.707 -- \textbf{the ensemble actually underperformed the plain single model by about 3 points}, and no individual fold came close either.
+
+The most likely explanation is that each fold only trains on roughly 6,667 images, two-thirds of the 10,000 available, since the remaining third is held out for that fold's own validation. Experiment 6's single model, by contrast, got to train on the entire 10,000-image training set. It appears that the accuracy lost from training on less data per fold was larger than the accuracy gained back from averaging 3 models together. Fold 2 also triggered early stopping at epoch 47 out of 60, meaning it did not even get to use its entire epoch budget.
+
+This was a valuable experiment to run despite the negative result: it directly answers whether cross-validation and ensembling can improve on my best single-model result so far, and here the answer is no. Given this, along with the fact that even Experiment 6's 0.707 is still well below the Strong (0.814) and Boss (0.874) baselines regardless of ensembling, I decided to set aside cross-validation/ensembling for now and instead push a single model harder: a deeper architecture (ResNet34 in place of ResNet18) and a substantially longer training budget.
+
+
+
 
 \end{document}
