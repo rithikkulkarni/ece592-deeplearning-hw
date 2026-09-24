@@ -177,13 +177,11 @@ It seems that this time, the stronger regularization did what it was actually su
 
 Despite having made some progress here, though, there is still a long way to go before the Strong and Boss baselines. Some different techniques may have to be introduced to achieve this.
 
-\subsection{Cross Validation}
+\subsection{Cross Validation \& Ensemble}
 
-For my next experiment, it seemed I needed to try something new. I decided to do a 3-fold cross validation on just the training set (10,000 samples) and create an ensemble out of the 3 individual models. The final ensemble would then be tested on the validation set of 3,643 samples to judge its final validation accuracy.
+For my next experiment, it seemed I needed to try something new. I decided to do a 3-fold cross validation on just the training set (10,000 samples) and create an ensemble out of the 3 individual models. The final ensemble would then be tested on the validation set of 3,643 samples to judge its final validation accuracy. This cross validation is an attempt at adding variance to the model to catch case samples that otherwise wouldn't be caught.
 
-This cross validation is an attempt at adding variance to the model to catch case samples that otherwise wouldn't be caught.
-
-I kept the same recipe as Experiment 6 (ResNet18, dropout=0.5, weight\_decay=1e-3, lr=0.0001, 60 epochs/patience 15) unchanged across all 3 folds, so any difference would come from the data split rather than the training configuration. Each fold trains its own model from scratch on its $\frac{2}{3}$ share of the 10,000 training images and validates on the remaining $\frac{1}{3}$ (\autoref{fig:exp9}). Once all 3 folds finished training, I evaluated each fold's model, along with the ensemble of all 3 (averaging their predicted class probabilities together before taking the final class), on the untouched 3,643-image validation set -- the same validation set that produced Experiment 6's 0.707 result, so the comparison is apples-to-apples.
+I kept the same ResNet18 model and ``recipe'' for all 3 folds. Any real difference in each fold will end up coming from the data augmentation adding variance rather than the actual training configuration. Each fold trains an individual model on $\frac{2}{3}$ of the original 10,000 samples and then validates on the remaining $\frac{1}{3}$ (\autoref{fig:exp9}). Once all 3 folds are done training, each fold's model gets evaluated along with the ensemble of all 3 together. This ensemble averages their predicted class probabilities/predictions and the result is taken as the final prediction. This validation is taken on the validation set of 3,643 samples that were not used for training.
 
 \begin{figure}[htbp]
     \centering
@@ -192,11 +190,64 @@ I kept the same recipe as Experiment 6 (ResNet18, dropout=0.5, weight\_decay=1e-
     \label{fig:exp9}
 \end{figure}
 
-The individual fold accuracies on the held-out validation set were 0.648 (fold 0), 0.624 (fold 1), and 0.592 (fold 2), and the ensemble of all 3 (averaged probabilities) reached 0.676. Every single one of these numbers is worse than Experiment 6's single-model result of 0.707 -- \textbf{the ensemble actually underperformed the plain single model by about 3 points}, and no individual fold came close either.
+The individual accuracies of each fold on the validation set were 0.648, 0.624, and 0.592. The ensemble of all three folds reached 0.676. Every single result here is worse than our previous best validation accurayc of 0.707. The most likely explanation for this result is that each fold is getting far fewer training samples (6,667 vs 10,000), since I held out the remaining samples for individual fold validation.
 
-The most likely explanation is that each fold only trains on roughly 6,667 images, two-thirds of the 10,000 available, since the remaining third is held out for that fold's own validation. Experiment 6's single model, by contrast, got to train on the entire 10,000-image training set. It appears that the accuracy lost from training on less data per fold was larger than the accuracy gained back from averaging 3 models together. Fold 2 also triggered early stopping at epoch 47 out of 60, meaning it did not even get to use its entire epoch budget.
+This experiment is quite valuable despite the negative result. This pushes me away from immediate cross validation and towards pushing farther with a single model: perhaps a deeper architecture like ResNet34 instead of ResNet18 is the answer.
 
-This was a valuable experiment to run despite the negative result: it directly answers whether cross-validation and ensembling can improve on my best single-model result so far, and here the answer is no. Given this, along with the fact that even Experiment 6's 0.707 is still well below the Strong (0.814) and Boss (0.874) baselines regardless of ensembling, I decided to set aside cross-validation/ensembling for now and instead push a single model harder: a deeper architecture (ResNet34 in place of ResNet18) and a substantially longer training budget.
+\subsection{Scaling Up: ResNet34}
+
+I decided to set cross validation aside as a potential later configuration. I swapped ResNet18 for ResNet34, which is a deeper version of similar architecture, and gave it much more time for training with increased patience (150/25). All the other parameters such as dropout, weight decay, and learning rate, were kept the same according to my previous best performing experiments.
+
+\begin{figure}[h]
+    \centering
+    \includegraphics[width=0.5\textwidth]{exp10_curve.png}
+    \caption{ResNet34, 150 epochs (early-stopped at epoch 116): training vs. validation accuracy per epoch. Green line denotes the Strong baseline (0.814).}
+    \label{fig:exp10}
+\end{figure}
+
+This run achieved a best validation accuracy of 0.738 at epoch 90, and reached an early stop trigger at epoch 116 (\autoref{fig:exp10}). This certainly clears my previous best validation accuracy of 0.707, which is a good start.
+
+One thing I did notice here is that the model's steady improvement lasted far longer than any of the experiments with ResNet18. The best result wasn't achieved till epoch 90, which is a later epoch than the max for any previous runs. This makes sense since ResNet34 is a deeper model with more capacity and needs more epochs to actually make use of that capability.
+
+Important to note is that training accuracy kept climbing all the way past 0.84 in the last epochs, which signifies that it began overfitting. However, switching architectures definitely helped increase validation accuracy in the long run.
+
+\subsection{Learning Rate Schedule: Cosine Annealing}
+
+If we take a look at the previous experiment's curves, the validation accuracy peaked at epoch 90 and then for the remainder of training drifted back down and plateaued, even though the training accuracy kept climbing. This looked like a flat learning rate wasn't quite giving the later epochs enough room to find a better minimum, so I decided to add a cosine annealing schedule for the learning rate where it now decays smoothly from a set starting value (0.0003) down to 0 over the entire course of training. I raised the learning rate to 0.0003 because the schedule is bringing it back down anyway. All other parameters were kept the same as before.
+
+\begin{figure}[h]
+    \centering
+    \includegraphics[width=0.5\textwidth]{exp11_curve.png}
+    \caption{ResNet34 with cosine-annealing learning rate schedule, full 150 epochs (no early stopping): training vs. validation accuracy per epoch. Green line denotes the Strong baseline (0.814).}
+    \label{fig:exp11}
+\end{figure}
+
+This run managed a best validation accuracy of 0.799 at epoch 147 (\autoref{fig:exp11}), and never triggered the early stopping. That's a huge jump from the previous peak of 0.738.
+
+The shape of the curve is also quite different than before. Instead of peaking early, the validation accuracy kept climbing with the training accuracy for the entire run, which suggests that the learning rate schedule was working exactly as intended.
+
+The training accuracy still ended up extremely high around 0.95 by epoch 150, so there's still an overfitting gap remaining that needs to be addressed. Unlike before, however, the overfitting isn't what is actively costing us in terms of validation accuracy.
+
+\subsection{ResNet50 + Test Time Augmentation}
+
+Since the previous experiment got quite close to the strong baseline, I just made two chagnes for this experiment to try and make another leap in validation accuracy: Since upgrading the ResNet model capacity from 18 to 34 made such a big difference, I upgraded to ResNet50, an even deeper version of the same architecture family. I kept every other training parameter different and added test time augmentation (TTA) at inference time, as suggested in the homework hints.
+
+TTA means that instead of predicting on a single, unaugmented version of each image, I also run 5 separate randomly-augmented versions using the \texttt{train\_tfm} that I built in Question 1 to create various versions of the same image, averaging the prediction of the model of all 5 to get a final prediction. As the hint suggested, I weighted the augmented average 0.2 and the deterministic prediction 0.8.
+
+Since TTA doesn't actually effect training, I added a separation validation step for it at the end, completely independent of the regular mid-training evaluation so as not to disrupt the current architecture.
+
+\begin{figure}[h]
+    \centering
+    \includegraphics[width=0.5\textwidth]{exp12_curve.png}
+    \caption{ResNet50 with cosine-annealing learning rate schedule, full 150 epochs: training vs. validation accuracy per epoch.}
+    \label{fig:exp12}
+\end{figure}
+
+The ResNet50 model by itself reached a new best validation accuracy of 0.813 at epoch 132, and ran the full 150 epochs without stopping early (\autoref{fig:exp12}). That's already an improvement on all previous experiments, and just short of the Strong baseline. Once TTA was added on top of this, the validation accuracy was pushed from 0.813 up to 0.819, surpassing the Strong baseline for the first time.
+
+Both changes seemed to have contributed positively here. Switching to ResNet50 already closed a great deal of gap to the Strong baseline, and TTA gave the final push to get over it. The curve itself visually looks very similar to the previous experiment's, where validation accuracy goes up with the training accuracy for most of the run instead of what we had before in earlier experiments, where it peaked early. This makes sense, since I did not tweak the now-existing learning rate scheduler that was introduced in the previous experiment, only the underlying model itself.
+
+
 
 
 

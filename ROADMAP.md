@@ -553,7 +553,181 @@ the user before running).
 | Prediction | single-model argmax (no ensembling) | **yes** (back from exp_8/exp_9's averaged softmax) |
 | Platform | Kaggle (GPU), via `kaggle_sync.py run` | no |
 
-Pushed as kernel version 12. Result pending.
+Pushed as kernel version 12.
+
+**Result:** best validation accuracy **0.73784 at epoch 90/150**, early-stopped at
+epoch 116 (26 epochs without improvement, patience=25). Clears exp_7's 0.70730 by
+~0.031 (+4.3% relative), and clears exp_9's ensemble (0.67582) too — the best single-
+or multi-model result so far. Still short of Strong (0.814). Training accuracy
+climbed to ~0.85 by epoch 116 while validation plateaued/declined from its epoch-90
+peak — overfitting eventually caught up, just later and from a higher peak than
+exp_7. Kaggle kernel status showed `ERROR` again — confirmed to be the same known
+Q2/t-SNE placeholder issue as exp_9 (`model.cnn` doesn't exist on `ResNet`),
+unrelated to training; checkpoint/log/submission.csv all produced successfully.
+
+---
+
+### exp_11
+
+exp_10's curve showed validation accuracy plateauing/drifting down after its epoch-90
+peak while training accuracy kept climbing — a flat lr may not have been giving late
+training room to settle into a better minimum. Discussed next-step options with the
+user (LR schedule / re-tried ensembling on top of the stronger single model / bigger
+architecture or stronger augmentation); user chose to try the LR schedule first.
+
+Added `CosineAnnealingLR(optimizer, T_max=n_epochs)`, stepped once per epoch (not per
+batch). Starting lr raised from exp_10's flat 0.0001 to 0.0003, since the schedule
+brings it back down over the run anyway — lets early training move faster while
+still ending low for late-epoch fine-tuning. Current lr now also printed/logged each
+epoch. Everything else kept identical to exp_10 so the schedule (+ its higher
+starting lr) is the only intentional change.
+
+| Variable | Value | Changed from exp_10? |
+|---|---|---|
+| Image size | 128×128 | no |
+| `train_tfm` | same as exp_10 | no |
+| `test_tfm` | same as exp_10 | no |
+| Model | ResNet34 (`weights=None`) + `Dropout(p=0.5)`, single model | no |
+| Data split | fixed `./train` (10,000) / `./valid` (3,643), no CV | no |
+| Batch size | 64 | no |
+| `n_epochs` | 150 | no |
+| `patience` | 25 | no |
+| Optimizer | Adam, lr=0.0003 (was 0.0001), weight_decay=1e-3 | **yes** (starting lr) |
+| LR schedule | `CosineAnnealingLR`, T_max=150, stepped per epoch | **yes** (new — exp_10 had no schedule) |
+| Loss | CrossEntropyLoss | no |
+| Seed | 6666 | no |
+| Prediction | single-model argmax (no ensembling) | no |
+| Platform | Kaggle (GPU), via `kaggle_sync.py run` | no |
+
+Pushed as kernel version 13.
+
+**Result:** best validation accuracy **0.79948 at epoch 147/150** — ran the full
+150-epoch budget with no early stopping (vs. exp_10 stopping at 116). Clears exp_10's
+0.73784 by ~0.062 (+8.4% relative), and is now only ~0.0145 short of Strong (0.814).
+Unlike exp_10, validation accuracy tracked upward with training accuracy for
+essentially the whole run instead of peaking early and drifting down — the schedule's
+intended effect (fast early progress, fine-grained late updates) showed up clearly in
+the curve. Train accuracy reached ~0.95 by the end (real train/valid gap remains,
+~0.15), but it's no longer costing validation accuracy the way exp_10's overfitting
+did. Kaggle kernel status showed `ERROR` again — confirmed to be the same known
+Q2/t-SNE placeholder issue, unrelated to training; checkpoint/log/submission.csv all
+produced successfully.
+
+Found the actual assignment instructions PDF partway through this experiment (had
+been working from indirect context before). Cross-checked against it: confirmed no
+Kaggle leaderboard exists for this course despite the PDF's public/private grading
+slide (asked user directly) — the exp_9 redesign (keeping `./valid` untouched rather
+than merging per the PDF's literal CV instructions) remains correct for us, since a
+real local holdout is still the only way to measure anything without a leaderboard.
+PDF also gave a concrete definition of TTA (test-time augmentation): averaging
+predictions from multiple `train_tfm` passes with the deterministic `test_tfm`
+prediction at inference time, weighted (PDF's example: 0.2 avg(train_tfm) + 0.8
+test_tfm) — an inference-only technique, no retraining required. Planned as exp_12
+alongside a further architecture bump.
+
+---
+
+### exp_12
+
+Two changes bundled: (1) architecture — ResNet50 in place of exp_11's ResNet34
+(training recipe otherwise identical: dropout=0.5, weight_decay=1e-3, lr=0.0003
+cosine-annealed, n_epochs=150, patience=25); (2) TTA — additive, inference-only,
+doesn't touch training. Bundling is safe here specifically because TTA's effect is
+measured independently: a new evaluation cell compares plain (`test_tfm`-only)
+accuracy against TTA (5× `train_tfm` passes averaged with `test_tfm`, weighted
+0.2/0.8 per the PDF's example) on the labeled `./valid` set, before TTA is trusted
+for the actual `submission.csv` predictions on `./test`.
+
+| Variable | Value | Changed from exp_11? |
+|---|---|---|
+| Image size | 128×128 | no |
+| `train_tfm` | same as exp_11 | no |
+| `test_tfm` | same as exp_11 | no |
+| Model | ResNet50 (`weights=None`) + `Dropout(p=0.5)`, single model | **yes** (was ResNet34) |
+| Data split | fixed `./train` (10,000) / `./valid` (3,643), no CV | no |
+| Batch size | 64 | no |
+| `n_epochs` | 150 | no |
+| `patience` | 25 | no |
+| Optimizer | Adam, lr=0.0003, weight_decay=1e-3 | no |
+| LR schedule | `CosineAnnealingLR`, T_max=150, stepped per epoch | no |
+| Loss | CrossEntropyLoss | no |
+| Seed | 6666 | no |
+| Evaluation | plain vs. TTA accuracy compared on `./valid` before submission | **yes** (new) |
+| Prediction | TTA blend (5× train_tfm + test_tfm, 0.2/0.8) | **yes** (was test_tfm-only argmax) |
+| Platform | Kaggle (GPU), via `kaggle_sync.py run` | no |
+
+Pushed as kernel version 14.
+
+**Result: best validation accuracy 0.81302 at epoch 132/150** (ResNet50 alone,
+`test_tfm`-only) — full 150-epoch budget, no early stopping. Re-measured as 0.81307
+in the dedicated evaluation cell (same checkpoint, non-shuffled loader — the ~0.00005
+difference is noise). TTA (5x `train_tfm` passes averaged with `test_tfm`, 0.2/0.8)
+brought this to **0.81938 on `./valid` — clears Strong (0.814) for the first time**,
+a +0.00631 gain from TTA on top of ResNet50's already-strong 0.81307. Both changes
+contributed: ResNet50 alone already beat exp_11's 0.79948 by ~0.014, and TTA supplied
+the final push over the line. Kaggle kernel status showed `ERROR` again — confirmed
+to be the same known Q2/t-SNE placeholder issue, unrelated to this result.
+
+---
+
+### exp_13
+
+Now clearing Strong, targeting Boss (0.874) — a gap unlikely to close with more single-
+model tuning alone. Discussed with the user: exp_9's ensemble failed because 3-fold CV
+starved each fold of training data (~2/3 of `./train`); the fix isn't to abandon
+ensembling, it's to ensemble models each trained on the FULL `./train` set
+independently, exactly per the assignment PDF's own "sample procedure for beating the
+boss baseline" (multiple random seeds / multiple model structures, each fully
+trained, then ensembled).
+
+3-model ensemble: exp_11 (ResNet34+cosine, 0.79948), exp_12 (ResNet50+cosine+TTA,
+0.81938), and this experiment (DenseNet121 — a structurally different family, dense
+connections instead of residual — same recipe otherwise: dropout=0.5, weight_decay=
+1e-3, lr=0.0003 cosine-annealed, 150 epochs/patience 25). Chose DenseNet121 over
+EfficientNet/ConvNeXt/ViT specifically because those are tuned for pretrained
+initialization and tend to train poorly from scratch on small datasets — a real risk
+given pretrained weights are banned for this assignment.
+
+Reused exp_11/exp_12's checkpoints rather than retraining them (would cost ~3x the GPU
+time for identical results) — required a real platform fix: Kaggle kernel runs start
+from a clean filesystem, so a previous run's output isn't automatically available in a
+new run. Uploaded both checkpoints as a private Kaggle Dataset
+(`rithikkulkarni1/hw2-checkpoints`, via `kaggle datasets create`) and added it as a
+`dataset_source` in `kernel-metadata.json`, so this run reads them from
+`/kaggle/input/hw2-checkpoints/`.
+
+`build_model` refactored to take an `arch` argument (`resnet34`/`resnet50`/
+`densenet121`) so the ensemble-evaluation cell can construct and load all 3
+architectures in one notebook. New `tta_predict_probs()` helper factors out exp_12's
+TTA logic (now called once per ensemble member instead of duplicated). Per discussion
+with the user: ensemble input is each model's **TTA-blended** prediction (not plain),
+since TTA and ensembling address different error sources and stack cleanly; weighting
+is **equal** across the 3 members (simplest, matches the PDF's own Ensemble slide,
+and the accuracy spread between members isn't large enough to obviously justify
+tuning weights against the same `./valid` set being used to judge the ensemble).
+
+New evaluation cell measures each model's individual TTA accuracy on `./valid`, then
+the equal-weighted ensemble accuracy, before trusting it for `submission.csv`.
+
+| Variable | Value | Changed from exp_12? |
+|---|---|---|
+| Image size | 128×128 | no |
+| `train_tfm` | same as exp_12 | no |
+| `test_tfm` | same as exp_12 | no |
+| Model | DenseNet121 (`weights=None`) + `Dropout(p=0.5)`, single model | **yes** (was ResNet50) |
+| Data split | fixed `./train` (10,000) / `./valid` (3,643), no CV | no |
+| Batch size | 64 | no |
+| `n_epochs` | 150 | no |
+| `patience` | 25 | no |
+| Optimizer | Adam, lr=0.0003, weight_decay=1e-3 | no |
+| LR schedule | `CosineAnnealingLR`, T_max=150, stepped per epoch | no |
+| Loss | CrossEntropyLoss | no |
+| Seed | 6666 | no |
+| Ensemble | exp_11 + exp_12 + exp_13, equal-weighted avg of each model's TTA-blended probabilities | **yes** (new — first genuine multi-model ensemble, each on full data) |
+| Prediction | 3-model TTA-ensemble | **yes** (was single-model TTA) |
+| Platform | Kaggle (GPU), via `kaggle_sync.py run`; reads `rithikkulkarni1/hw2-checkpoints` dataset as input | **yes** (first use of a dataset input) |
+
+Pushed as kernel version 15. Result pending.
 
 ---
 
