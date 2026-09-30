@@ -13,6 +13,7 @@
 \usepackage{enumitem}
 \usepackage{listings}
 \usepackage{subcaption}
+\usepackage{natbib}
 
 \lstset{
     basicstyle=\ttfamily\small,
@@ -171,7 +172,7 @@ For Experiment 6, I raised the dropout from 0.3 to 0.5 and weight decay from 1e-
     \label{fig:exp6}
 \end{figure}
 
-This experiment achieved a best validation accuracy of 0.707 at epoch 58 (\autoref{fix:exp6}). This is the first time I've cleared the Medium baseline across any of my prior experiments.
+This experiment achieved a best validation accuracy of 0.707 at epoch 58 (\autoref{fig:exp6}). This is the first time I've cleared the Medium baseline across any of my prior experiments.
 
 It seems that this time, the stronger regularization did what it was actually supposed to do. The gap between training and validation accuracy stayed smaller throughout all of training. This confirms what I suspected after observing Experiment 5.
 
@@ -190,7 +191,7 @@ I kept the same ResNet18 model and ``recipe'' for all 3 folds. Any real differen
     \label{fig:exp9}
 \end{figure}
 
-The individual accuracies of each fold on the validation set were 0.648, 0.624, and 0.592. The ensemble of all three folds reached 0.676. Every single result here is worse than our previous best validation accurayc of 0.707. The most likely explanation for this result is that each fold is getting far fewer training samples (6,667 vs 10,000), since I held out the remaining samples for individual fold validation.
+The individual accuracies of each fold on the validation set were 0.648, 0.624, and 0.592. The ensemble of all three folds reached 0.676. Every single result here is worse than our previous best validation accuracy of 0.707. The most likely explanation for this result is that each fold is getting far fewer training samples (6,667 vs 10,000), since I held out the remaining samples for individual fold validation.
 
 This experiment is quite valuable despite the negative result. This pushes me away from immediate cross validation and towards pushing farther with a single model: perhaps a deeper architecture like ResNet34 instead of ResNet18 is the answer.
 
@@ -247,7 +248,90 @@ The ResNet50 model by itself reached a new best validation accuracy of 0.813 at 
 
 Both changes seemed to have contributed positively here. Switching to ResNet50 already closed a great deal of gap to the Strong baseline, and TTA gave the final push to get over it. The curve itself visually looks very similar to the previous experiment's, where validation accuracy goes up with the training accuracy for most of the run instead of what we had before in earlier experiments, where it peaked early. This makes sense, since I did not tweak the now-existing learning rate scheduler that was introduced in the previous experiment, only the underlying model itself.
 
+\subsection{Real Ensembling: ResNet34 + ResNet50 + DenseNet121}
 
+With only the Boss baseline of 0.874 remaining, pushing a single model any further seems unlikely. This brought me back to the ensembling I tried earlier, but this time doing it properly. My earlier attempt did so horribly because each fold only trained on $\frac{2}{3}$ of the training data, so each individual model was far weaker to begin with. This time, each individual model has been trained on the full training set of 10,000 samples individually.
+
+I built a 3-model ensemble using the ResNet34 model from when I introduced an LR schedule, the ResNet50 model from the last experiment (TTA), and a newly trained DenseNet121 model that is from a different architecture family to hopefully introduce some diversity in coverage and aid the ensemble output. I trained DenseNet121 using the same parameters as my other experiments (dropout 0.5, weight decay 1e-3, learning rate schedule started at 0.0003, and 150/25 epochs/patience).
+
+\begin{figure}[h]
+    \centering
+    \includegraphics[width=0.5\textwidth]{exp13_curve.png}
+    \caption{DenseNet121 LR schedule, 150 epochs: training vs. validation accuracy per epoch.}
+    \label{fig:exp13}
+\end{figure}
+
+Since I had already trained two of the models, new training only had to run on DenseNet121 (\autoref{fig:exp13}). I brought in the two previous ResNet models as Kaggle Datasets so that this run could load them in directly instead of retraining.
+
+DenseNet itself reached a best validation accuracy of 0.798 at epoch 146. With TTA, the validation accuracies of each model were 0.807 (ResNet34), 0.821 (ResNet50), and 0.803 (DenseNet121). I then combined all of the TTA-blended probabilities using a simple, equal-weighted average (where each model contributes $\frac{1}{3}$, and got a validation accuracy of 0.845 on the validation set. This beats every individual model from before.
+
+What was really interesting here is that DenseNet121 was actually the weakest out of all three models, but still meaningfully improved the overall ensemble because it helped patch the errors that ResNet models tend to struggle with.
+
+I also tried weighing the ensemble by individual model accuracy instead of equal weights for every model, but this absolutely no measurable difference (still 0.845).
+
+\subsection{Fourth Model: VGG16 + CutMix}
+
+My next idea was to add a fourth member to the ensemble, for which I picked VGG16 with batchnorm, specifically because it has the most different architecture from the current three models I'm using. It has no skip connections at all, unlike ResNet or DenseNet. I also decided to try training it with CutMix, which cuts out a random rectangular area from one training image and introduces it to another training image. This mixes image labels proportionally to how big the patch was. I applied this for half the training batches, using the standard settings that I found in the CutMix paper \citep{yun2019cutmix}. All hyper-parameters in this training, however, stayed the same as my other experiments.
+
+\begin{figure}[h]
+    \centering
+    \includegraphics[width=0.5\textwidth]{exp15_curve.png}
+    \caption{VGG16 (batchnorm) + CutMix, cosine LR schedule, 150 epochs (no early stopping): training vs. validation accuracy per epoch.}
+    \label{fig:exp15}
+\end{figure}
+
+VGG16 achieved a best validation accuracy of 0.836 at epoch 149 (\autoref{fig:exp15}). With TTA, this went up to 0.843, making it the single strongest individual model performance so far. CutMix seems to have helped substantially, both in keeping the model steadily improving, and in just raw accuracy.
+
+I then combined all four models (ResNet34, ResNet50, DenseNet121, VGG16+CutMix) into an equal weighting ensemble, which achieved a validation accuracy of 0.863. With accuracy-based weighting, it improved to 0.864, but that is almost negligible improvement. It seems the fact that VGG16 had a bigger gap in performance from the other three made the accuracy-based weights actually matter.
+
+% Next, I will try something to truly achieve the Boss baseline.
+
+\section{Final Accuracy}
+
+My best-performing result is the 4-model ensemble described above: ResNet34, ResNet50, DenseNet121, and VGG16 (trained with CutMix), each trained independently on the full 10,000-image training set, combined via accuracy-based weighting of their test-time-augmented predictions. This ensemble reaches a \textbf{final validation accuracy of 0.864} on the 3,643-image validation set.
+
+This clears the Simple (0.637), Medium (0.700), and Strong (0.814) baselines, and falls short of the Boss baseline (0.874) by about 0.01. I plan to run one more experiment to try to close this remaining gap, but 0.864 is my result as of this report.
+
+Since this ensemble is built by combining four independently-trained models rather than a single continuous training run, there isn't one ``best epoch'' train/validation accuracy pair for the ensemble itself. For that reason, I'm also reporting the training and validation accuracy of my single best-performing individual model, VGG16 (trained with CutMix), at its own best epoch (epoch 149): a \textbf{training accuracy of 0.745} and a \textbf{validation accuracy of 0.836} (before TTA and ensembling -- 0.864 is the final combined number reported above).
+
+\section{Visual Representations Implementation (Question 2)}
+
+For this section, I was instructed to use t-SNE (dimensionality-reduction technique) to visualize the embeddings of certain classes at different layers in the inference of the final model, which in this case, is the VGG16 + CutMix model that achieved a validation accuracy of 0.843. The goal is to see whether the tight clustering of each food class gets better at deeper layers, which would signal that the network is getting better at class discrimination as the data moves through it.
+
+VGG16's convolutional feature extractor (\texttt{model.features}) is a single flat \texttt{nn.Sequential} stack of layers, unlike ResNet or DenseNet which use sub-blocks that are named. This made it so that I could extract the output of some intermediate layer by using the layer's index, similar to how the original starter code was doing it for the from-scratch CNN. There were 5 convolutional blocks in VGG16, and each ended in a max-pool layer, so I defined ``mid'' as the end of block 3 (index 24) and ``top'' as the end of block 5 (index 44). I did this so that it would roughly split the network into thirds.
+
+For each of these two mid/top layers, I ran every single image in the validation set through the model up to that layer, then flattened the feature maps into a single vector for an image, and applied t-SNE to project them into a 2D space. The mid-layer features are extremely high-dimensional, so before doing t-SNE, I reduced them to 50 dimensions with PCA (Principal Component Analysis) before running t-SNE. I did this because t-SNE does pairwise computation which would be incredibly slow with so many dimensions. I was recommended this by scikit-learn's documentation of t-SNE.
+
+\begin{figure}[htbp]
+    \centering
+    \begin{subfigure}{0.48\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{q2_tsne_mid.png}
+        \caption{Mid layer (end of block 3)}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}{0.48\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{q2_tsne_top.png}
+        \caption{Top layer (end of block 5)}
+    \end{subfigure}
+    \caption{t-SNE visualization of VGG16's learned representations on the validation set, colored by true class (11 food classes).}
+    \label{fig:q2-tsne}
+\end{figure}
+
+This visual result definitely matches my expectations (\autoref{fig:q2-tsne}). At the mid layer, most of the classes are still amongst the huge blob, and only some of the classes are moving to their own specific regions. At the top layer, there is a stark difference where each class has a clearly isolated cluster, even the ones that did not show signs of such behavior at the mid layer.
+
+This visually confirms that the network progressively transforms the information from image pixels into information that are specialized for classifying these 11 classes of food.
+
+\bibliographystyle{plainnat}
+\begin{thebibliography}{9}
+
+\bibitem[Yun et al.(2019)]{yun2019cutmix}
+Yun, S., Han, D., Oh, S. J., Chun, S., Choe, J., \& Yoo, Y. (2019).
+CutMix: Regularization strategy to train strong classifiers with localizable features.
+\textit{Proceedings of the IEEE/CVF International Conference on Computer Vision (ICCV)}, 6023--6032.
+
+\end{thebibliography}
 
 
 

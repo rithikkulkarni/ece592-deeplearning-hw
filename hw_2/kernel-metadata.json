@@ -8,7 +8,7 @@
     "enable_gpu": "true",
     "enable_internet": "true",
     "machine_shape": "NvidiaTeslaT4",
-    "dataset_sources": ["rithikkulkarni1/hw2-checkpoints"],
+    "dataset_sources": ["rithikkulkarni1/hw2-checkpoints", "rithikkulkarni1/hw2-food11-data"],
     "competition_sources": [],
     "kernel_sources": []
 }

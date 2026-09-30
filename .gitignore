@@ -6,10 +6,10 @@ __pycache__/
 
 # Dataset (downloaded locally for Phase 1 verification; not for git)
 food11.zip
-/train/
-/valid/
-/test/
-kaggle_output/
+hw_2/train/
+hw_2/valid/
+hw_2/test/
+hw_2/kaggle_output/
 
 # Training artifacts (checkpoints/logs are large/per-run, not for git)
 *_best.ckpt

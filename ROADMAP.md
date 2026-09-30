@@ -727,7 +727,168 @@ the equal-weighted ensemble accuracy, before trusting it for `submission.csv`.
 | Prediction | 3-model TTA-ensemble | **yes** (was single-model TTA) |
 | Platform | Kaggle (GPU), via `kaggle_sync.py run`; reads `rithikkulkarni1/hw2-checkpoints` dataset as input | **yes** (first use of a dataset input) |
 
-Pushed as kernel version 15. Result pending.
+Pushed as kernel version 15.
+
+**Result:** DenseNet121 alone reached best validation accuracy 0.79833 at epoch 146/150
+(full 150-epoch budget, no early stopping). Individual TTA-blended accuracies on
+`./valid`: exp_11 (ResNet34) 0.80675, exp_12 (ResNet50) 0.82130, exp_13 (DenseNet121)
+0.80346. **Ensemble (equal-weight avg of all 3 TTA-blended models): 0.84491** — beats
+every individual member by 2.4-4.1 points, and clears exp_12's single-model 0.81938
+by +0.0255. Now only ~0.029 short of Boss (0.874). DenseNet121 was the weakest
+individual member, yet still contributed meaningfully to the ensemble gain -
+consistent with architectural diversity mattering more than each member's raw
+accuracy for ensemble purposes. Kaggle kernel status showed `ERROR` again - confirmed
+to be the same known Q2/t-SNE placeholder issue, unrelated to this result.
+
+---
+
+### exp_14
+
+exp_13's 3-model ensemble used equal weighting (0.84491 on `./valid`), ~0.029 short of
+Boss. Testing whether accuracy-weighted ensembling does better: `weight_i = acc_i /
+sum(acc)`, using each model's own measured TTA accuracy. Chose simple proportional
+weighting over a tunable scheme (e.g. softmax-with-temperature) since the latter's
+hyperparameter would be chosen by looking at the same `./valid` set being used to
+judge the ensemble - proportional weighting needs no such tuning. Flagged to the user
+beforehand that the 3 models' accuracies are close (~0.80-0.82), so only a small
+shift from equal weighting was expected.
+
+Training-free this round: uploaded `exp_13_best.ckpt` to the existing
+`rithikkulkarni1/hw2-checkpoints` Kaggle Dataset alongside exp_11/exp_12 (via `kaggle
+datasets version`), so all 3 checkpoints are available as inputs with no retraining
+needed. Training loop wrapped in `if RUN_TRAINING:` (set to `False`) for this run;
+`model_save_path` points directly at the dataset-provided exp_13 checkpoint instead.
+Ensemble-evaluation cell now computes both equal and accuracy-weighted ensembles and
+self-selects whichever scores higher on `./valid` for the actual `submission.csv` -
+same "measure before trusting" pattern as exp_9's ensemble-vs-single-model check and
+exp_12's TTA check.
+
+| Variable | Value | Changed from exp_13? |
+|---|---|---|
+| Models | exp_11 (ResNet34) + exp_12 (ResNet50) + exp_13 (DenseNet121), all reused | no |
+| Training | none - all 3 checkpoints reused via Kaggle Dataset input | **yes** (was training DenseNet121 fresh) |
+| Ensemble weighting | equal AND accuracy-weighted computed, higher one used | **yes** (was equal only) |
+| Platform | Kaggle (GPU), via `kaggle_sync.py run`; reads `hw2-checkpoints` v2 (now has all 3 checkpoints) | no |
+
+Pushed as kernel version 16. Ran in ~8min (inference-only), confirming the
+training-free approach worked as intended.
+
+**Result:** individual TTA accuracies: exp_11 0.80813, exp_12 0.82103, exp_13 0.80264
+(small differences from exp_13's numbers are TTA's inherent randomness - augmented
+crops are resampled each run, same checkpoints). **Equal-weight ensemble: 0.84408.
+Accuracy-weighted ensemble: 0.84408 - identical to 5 decimal places.** Accuracy-
+weighting made no measurable difference: with the 3 models this close in accuracy
+(~0.80-0.82), proportional weighting doesn't have enough leverage to flip any
+argmax predictions. Notebook correctly self-selected equal-weight (tie). Confirms
+the prediction made before running this experiment. The ensemble is plateauing
+around 0.844-0.845, still ~0.03 short of Boss (0.874).
+
+---
+
+### exp_15
+
+exp_14 showed accuracy-weighting is a dead end - the real lever left is more/better
+ensemble members. Adding a 4th: VGG16 (batchnorm), chosen for maximum architectural
+diversity from the current 3 (no skip connections at all, unlike ResNet34/ResNet50's
+residual connections and DenseNet121's dense connections) - also explicitly listed in
+the assignment PDF's Model Selection slide. Trained with CutMix on top of the usual
+recipe, to try to make this new member individually stronger too, not just more
+diverse.
+
+CutMix: per batch, with probability 0.5, cuts a random rectangular patch (area
+proportional to `1 - lambda`, `lambda ~ Beta(1,1)`) from a randomly-permuted copy of
+the batch and pastes it onto the original images; loss is mixed between the original
+and permuted labels by the same proportion. Standard defaults from the original
+CutMix paper (Yun et al. 2019), not tuned against `./valid`. `build_model` gained a
+`vgg16_bn` branch - unlike the other archs, it does NOT wrap the classifier head in
+an extra explicit Dropout, since torchvision's `vgg16_bn.classifier` already has two
+`Dropout(p=0.5)` layers built in (comparable regularization to our recipe's default
+elsewhere; stacking another would be redundant).
+
+Smoke-tested locally first (CPU, 40-image subset, 2 epochs) before pushing - verified
+both the CutMix and non-CutMix code paths run without shape errors or non-finite
+losses, and confirmed `build_model`'s other 3 architecture branches (resnet34/
+resnet50/densenet121) still produce correct output shapes after the `vgg16_bn`
+addition.
+
+Ensemble becomes exp_11 + exp_12 + exp_13 + exp_15 (exp_14 was the weighting test,
+not a model). Same equal-vs-accuracy-weighted self-selecting evaluation as exp_14,
+recomputed since membership changed (rather than assuming exp_14's "weighting doesn't
+help" conclusion carries over unchanged).
+
+| Variable | Value | Changed from exp_13 recipe? |
+|---|---|---|
+| Image size | 128×128 | no |
+| `train_tfm` | same, plus CutMix applied to ~50% of batches | **yes** (new) |
+| `test_tfm` | same | no |
+| Model | VGG16 (batchnorm, `weights=None`), single model | **yes** (4th architecture) |
+| Data split | fixed `./train` (10,000) / `./valid` (3,643), no CV | no |
+| Batch size | 64 | no |
+| `n_epochs` | 150 | no |
+| `patience` | 25 | no |
+| Optimizer | Adam, lr=0.0003, weight_decay=1e-3 | no |
+| LR schedule | `CosineAnnealingLR`, T_max=150, stepped per epoch | no |
+| CutMix | prob=0.5, Beta(1,1) | **yes** (new) |
+| Loss | CrossEntropyLoss (mixed for CutMix batches) | no |
+| Seed | 6666 | no |
+| Ensemble | exp_11 + exp_12 + exp_13 + exp_15, equal vs. accuracy-weighted (self-selected) | **yes** (4 members, was 3) |
+| Platform | Kaggle (GPU), via `kaggle_sync.py run`; reads `hw2-checkpoints` (exp_11/12/13) as input | no |
+
+Pushed as kernel version 17.
+
+**Infra incident (unrelated to exp_15's code):** both v17 and a v18 retry failed
+before reaching any training - `curl` pulled only 186KB of `food11.zip` (identical
+truncated size both times) instead of the ~1.1GB archive, so `unzip` failed and
+`./train` never existed. Root cause: the Dropbox link now returns "Link Temporarily
+Disabled". Checked the documented Google Drive fallback too - also broken
+("Cannot retrieve the public link... may have had many accesses", i.e. its own
+download quota exhausted). Both external links are now unreliable and outside our
+control.
+
+Fix: searched Kaggle for existing Food-11 re-uploads first, but every candidate
+found (`vermaavi/food11`, `imbikramsaha/food11`, `karakaggle/food11`,
+`trolukovich/food11-image-dataset`) uses a different train/valid/test partition of
+the same underlying image pool (e.g. training=9866/validation=3430/evaluation=3347
+vs. our 10000/3643/3000 - same total of 16,643 images, different split boundaries),
+which would make validation accuracy incomparable across experiments if used. Instead
+uploaded our own already-verified local `train`/`valid`/`test` folders (confirmed
+exact match to the original counts) as a new private Kaggle Dataset
+(`rithikkulkarni1/hw2-food11-data`, zipped via PowerShell `Compress-Archive` since
+`zip` isn't available in this Windows/Git Bash setup) and added it as a second
+`dataset_source` in `kernel-metadata.json`. This also permanently removes the whole
+project's dependency on flaky external links for every future experiment.
+
+v19 (first push with the new dataset_source) was rejected as an invalid source -
+Kaggle was still indexing the freshly-uploaded 1GB dataset. v20 (~60s later) was
+accepted but still failed - Kaggle auto-extracts uploaded `.zip` files for dataset
+storage, so there was no `food11.zip` to copy; the mount already had `train/`,
+`valid/`, `test/` directly. Cell 5 rewritten to symlink
+(`ln -s /kaggle/input/hw2-food11-data/{train,valid,test} ./`) instead of
+copying/unzipping - also avoids duplicating ~1.1GB. Cell 6 (`unzip`) deleted, no
+longer needed. Re-pushed as v21; ran correctly.
+
+**Result:** VGG16+CutMix reached best validation accuracy **0.83596 at epoch 149/150**
+(full budget, no early stopping). With TTA, individual accuracies: exp_11 0.80648,
+exp_12 0.82130, exp_13 0.80236, **exp_15 0.84271 - now the strongest individual
+model**, beating even ResNet50. CutMix clearly helped substantially, both for raw
+accuracy and (per the training curve) convergence stability in later epochs.
+
+**Equal-weight ensemble (4 models): 0.86302. Accuracy-weighted: 0.86357** (weights:
+exp_11=0.2464, exp_12=0.2509, exp_13=0.2452, exp_15=0.2575) - accuracy-weighting
+edged out equal-weighting this time (unlike exp_14), since the spread between members
+is now wider (0.802-0.843) with a clearly stronger member to upweight. Notebook
+self-selected accuracy-weighted for `submission.csv`. **0.86357 is only ~0.0104 short
+of Boss (0.874)** - the closest result across all 15 experiments by a wide margin.
+
+**Open item:** `submission.csv` didn't appear in `kaggle kernels output` pulls (tried
+several `--file-pattern` variants) despite log timestamps showing ~10.6min elapsed
+between the ensemble-eval cell finishing and the Q2 cell's output - consistent with
+the test-prediction/CSV-write cells actually running, not being skipped. Possibly
+related to this being the first run using symlinks for `train`/`valid`/`test`
+interfering with Kaggle's output packaging. `exp_15_best.ckpt` and the full log
+pulled fine. Joins the existing known gap (executed notebook not downloadable via
+CLI) - defer to checking the Kaggle kernel's output page directly in a browser at
+final packaging time (Phase 7).
 
 ---
 
