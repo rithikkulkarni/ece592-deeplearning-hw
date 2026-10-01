@@ -907,3 +907,265 @@ Phase 1 (data) ──► Phase 2 (bug fixes / smoke test)
                                                      │
                                               Phase 7 (packaging & submission)
 ```
+---
+---
+
+# ECE 592 HW3 — Design of GNNs Roadmap
+
+**Deadline:** 11 Oct 2026 (slides say "Tuesday", but 11 Oct 2026 is a Sunday — confirm
+the real due date on Moodle)
+**Deliverables:** one zip `HW3_rrkulka3.zip` on Moodle, containing:
+- the completed notebook **with visible outputs** (slides name it
+  `ECE592_HW3-Design_of_GNNs.ipynb`; ours is `ECE592HW3-rrkulka3.ipynb`, so check
+  whether it needs renaming)
+- a report PDF (written in Overleaf) with: answers to Q1–Q4; best **train, validation,
+  and test** scores for Q5 and Q6; observations (train/test gaps, why validation and
+  test differ, etc.)
+
+**Grading:** 60 points total (15% of final grade). Q1–Q4 are 5 points each; Q5 and Q6
+are 20 points each and are scored on **test** metric bands. Each question needs both
+correct, executed code **and** the numbers/observations in the report.
+
+| Q5 test acc. (ogbn-arxiv) | Points | | Q6 test ROC-AUC (ogbg-molhiv) | Points |
+|---|---|---|---|---|
+| < 60% | 0 | | < 70% | 0 |
+| 60–65% | 5 | | 70–74% | 5 |
+| 65–70% | 10 | | 74–75% | 10 |
+| 70–71% | 15 | | 75–76% | 15 |
+| 71–72% | 18 | | 76–77% | 18 |
+| ≥ 72% | 20 | | ≥ 77% | 20 |
+
+Reference "sanity check" performance from the slides: Q5 ≥ 71% test accuracy, Q6 ≥ 74%
+test ROC-AUC. Note the full-credit bands (72% / 77%) sit **above** those references,
+so the plain scaffold may land at 18 or below — improvements (skip connections,
+pooling choice, hyperparameters) may be needed for full marks.
+
+Rules from the slides / notebook to keep in mind:
+- **Use the official OGB `Evaluator` for all metrics — don't write our own metric code.**
+- `best_model` is selected by **validation** metric, never test.
+- Training-loop cells say "Please do not change these args"; the `args` cells above
+  them say "You can change the hyperparameters". The `forward` TODOs explicitly allow
+  improvements (e.g. skip connections, pooling all layers to the output).
+- Architecture for Q5 is fixed in shape: `GCNConv → BatchNorm → ReLU → Dropout`,
+  repeated, final `GCNConv → LogSoftmax`.
+- Q7 (other global pooling layers) is optional, **no bonus marks**. Modifying the
+  architecture after completing the required parts is also optional.
+- `hw3_warmup.ipynb` (NetworkX + PyG basics) is ungraded and not submitted.
+
+---
+
+## HW3 Phase 0 — Compute & Environment
+
+**Goal:** Decide where the notebook runs and get PyG + OGB (+ `torch_sparse`) installed
+there. Unlike HW2, the notebook itself estimates each training run at **<10 min on GPU**,
+so this is about getting a working environment, not surviving multi-hour runs.
+
+- [x] Pick a platform — **Colab GPU runtime as a VS Code kernel** (report3.md D1).
+- [x] Install `torch_geometric`, `ogb`, and `torch_sparse` compatible with that
+      platform's torch/CUDA version.
+- [ ] Confirm `T.ToSparseTensor()` (✅ works, cell 23) and `adj_t.to_symmetric()` (cell 30,
+      not yet run) — both need `torch_sparse`.
+- [ ] Decide how the final submitted notebook gets its visible outputs (it must be an
+      executed copy, not just code).
+
+**Done when:** the setup and import cells run cleanly on the chosen platform.
+
+---
+
+## HW3 Phase 1 — Task 1: PyG & OGB basics (Q1–Q4, 20 pts)
+
+**Goal:** Implement the four inspection functions and record the answers.
+
+- [x] Q1 (6 classes, 3 features): `get_num_classes`, `get_num_features` on ENZYMES.
+- [x] Q2 (label 4): `get_graph_class` for graph index 100.
+- [x] Q3 (53 edges): `get_graph_num_edges` for graph index 200 — count each **undirected** edge
+      once; can't just return `data.num_edges`.
+- [x] Q4 (128 features): `graph_num_features` on the ogbn-arxiv graph.
+- [x] Record all four answers in report3.md (Run Log R1).
+
+**Done when:** all four cells print sensible answers (sanity: ogbn-arxiv should have
+128 features per the slides) and they're recorded.
+
+---
+
+## HW3 Phase 2 — Task 2: Node classification on ogbn-arxiv (Q5, 20 pts)
+
+**Goal:** Build the GCN and train it full-batch on the arxiv citation graph.
+
+- [x] `GCN.__init__`: `ModuleList` of `num_layers` `GCNConv`s, `num_layers - 1`
+      `BatchNorm1d`s, `LogSoftmax`.
+- [x] `GCN.forward`: the figure's pipeline; respect `self.training` for dropout and
+      skip softmax when `return_embeds=True` (Task 3 reuses this).
+- [x] `train()`: zero grad → forward → slice by `train_idx` → loss.
+- [x] `test()`: one full forward pass (no slicing).
+- [x] Run with default args, record best_model train/valid/test (R2: 73.53 / 71.93 / 71.61).
+- [x] Improve past 72%: residual (R3, reverted) → 500 ep (R4) → lr 0.005 (R5) → dropout 0.6 (R6)
+      → hidden 512 (R7, **72.19% test, final**).
+
+**Done when:** best_model train/valid/test accuracies are recorded, and
+`ogbn-arxiv_node.csv` has been written.
+
+---
+
+## HW3 Phase 3 — Task 3: Graph classification on ogbg-molhiv (Q6, 20 pts)
+
+**Goal:** Reuse the GCN as a node-embedding model, pool to graph embeddings, classify.
+
+- [x] `GCN_Graph.__init__`: choose a global pooling layer — **mean** (D11).
+- [x] `GCN_Graph.forward`: GCN embeddings → pool using `batch` → linear.
+- [x] `train()`: zero grad → forward → mask with `is_labeled` → float labels → loss.
+- [x] Run with default args, record best_model train/valid/test ROC-AUC (R8: 83.65 / 79.90 / 75.86).
+- [ ] If test < 77%, discuss improvement options before changing anything.
+
+**Done when:** best_model train/valid/test ROC-AUC recorded, and
+`ogbg-molhiv_graph_{valid,test}.csv` written.
+
+---
+
+## HW3 Phase 4 — Optional: Q7 pooling comparison / architecture changes
+
+- [ ] Try the other global pooling layers in PyG and compare ROC-AUC.
+- [ ] Any architecture modifications, recorded as increase/decrease vs. the baseline.
+
+---
+
+## HW3 Phase 5 — Report Writing (throughout)
+
+- [ ] Q1–Q4 answers (with a one-line explanation of how each was computed — e.g. why
+      the edge count is halved).
+- [ ] Q5 and Q6: best train / valid / test scores.
+- [ ] Observations: train/test gap for each task; why validation and test differ
+      (arxiv's time-based split; molhiv's scaffold split); why ROC-AUC rather than
+      accuracy for molhiv (class imbalance).
+- [ ] Optional Q7 table.
+
+---
+
+## HW3 Phase 6 — Packaging & Submission Checklist
+
+- [ ] Notebook runs top-to-bottom with **visible outputs** for every graded cell.
+- [ ] Numbers in the report match the numbers printed in the submitted notebook.
+- [ ] Notebook filename confirmed (see Deliverables note above).
+- [ ] Report PDF exported from Overleaf.
+- [ ] Zip named `HW3_rrkulka3.zip`, submitted on Moodle before the deadline.
+
+---
+
+## HW3 Experiment Log
+
+Each real training run gets an entry with its exact configuration. Results and
+interpretation go in `hw_3/report3.md`.
+
+### q5_baseline (R2)
+
+| Variable | Value |
+|---|---|
+| Architecture | GCN per scaffold figure: 3× GCNConv (128→256→256→40), BN+ReLU+Dropout on hidden layers, LogSoftmax |
+| `num_layers` / `hidden_dim` | 3 / 256 |
+| `dropout` | 0.5 |
+| Optimizer | Adam, lr=0.01 |
+| `epochs` | 100 |
+| Loss | `F.nll_loss` |
+| Seed | none |
+| Platform | Colab T4 via VS Code kernel |
+
+**Result:** best (epoch 96) Train 73.53%, Valid 71.93%, **Test 71.61%** (18-pt band).
+
+### q5_residual (R3)
+
+| Variable | Value | Changed from q5_baseline? |
+|---|---|---|
+| Architecture | same, + residual on hidden→hidden layers (`x = x + h`), only the middle layer qualifies at 3 layers | **yes** |
+| Seed | `torch.manual_seed(6666)` before model construction | **yes** (was unseeded) |
+| everything else | identical | no |
+
+**Result:** best (epoch 100) Train 73.11%, Valid 71.59%, **Test 70.57%** (15-pt band) — 1.04 below
+R2 on test, 0.34 on valid; within run-to-run noise given different seeds. No clear benefit
+from residuals at 3 layers. See report3.md R3.
+**Reverted** (D7) — residual code removed from the class.
+
+### q5_500ep (R4)
+
+| Variable | Value | Changed from q5_baseline? |
+|---|---|---|
+| Architecture | plain scaffold GCN (residual reverted) | no |
+| `epochs` | 500 | **yes** (was 100) |
+| Seed | `torch.manual_seed(6666)` before model construction | **yes** (was unseeded) |
+| everything else | identical | no |
+
+**Result:** best (epoch 490) Train 79.81%, Valid 73.09%, **Test 71.55%** (18-pt band). Valid +1.16 vs R2
+but test flat; train−valid gap widened 1.6 → 6.7. See report3.md R4.
+
+### q5_lr005 (R5)
+
+| Variable | Value | Changed from q5_500ep (R4)? |
+|---|---|---|
+| Optimizer | Adam, **lr=0.005** | **yes** (was 0.01) |
+| everything else | plain GCN, 500 epochs, seed 6666 | no |
+
+**Result:** best (epoch 391) Train 78.93%, Valid 73.18%, **Test 71.83%** (18-pt band) — best valid and
+best valid-selected test so far. 19 epochs had test ≥72% but none had the top valid. See report3.md R5.
+
+### q5_drop06 (R6)
+
+| Variable | Value | Changed from q5_lr005 (R5)? |
+|---|---|---|
+| `dropout` | **0.6** | **yes** (was 0.5) |
+| everything else | plain GCN, lr 0.005, 500 epochs, seed 6666 | no |
+
+**Result:** best (epoch 365) Train 77.12%, Valid 73.06%, **Test 71.66%**. Gap 5.75 → 4.06, test flat.
+Included in the LaTeX report (user reversed earlier call).
+
+### q5_wide512 (R7)
+
+| Variable | Value | Changed from q5_drop06 (R6)? |
+|---|---|---|
+| `hidden_dim` | **512** | **yes** (was 256) |
+| everything else | plain GCN, dropout 0.6, lr 0.005, 500 epochs, seed 6666 | no |
+
+**Result:** best (epoch 404) Train 80.36%, Valid 73.41%, **Test 72.19%** — **20-pt band, final Q5 config.**
+Jumping Knowledge fallback not needed.
+
+### q6_baseline (R8)
+
+| Variable | Value |
+|---|---|
+| Architecture | AtomEncoder(256) → GCN 5 layers (256→…→256, `return_embeds=True`) → `global_mean_pool` → Linear(256→1) |
+| `num_layers` / `hidden_dim` | 5 / 256 |
+| `dropout` | 0.5 |
+| Optimizer | Adam, lr=0.001 |
+| `epochs` / batch size | 30 / 32 |
+| Loss | `BCEWithLogitsLoss` (masked by `is_labeled`) |
+| Seed | `torch.manual_seed(6666)` before model construction |
+| Platform | Colab T4 via VS Code kernel |
+
+**Result:** best (epoch 26) Train 83.65%, Valid 79.90%, **Test 75.86% ROC-AUC** (15-pt band; ≥77 needed for 20).
+
+### q6_sum (R9)
+
+| Variable | Value | Changed from q6_baseline (R8)? |
+|---|---|---|
+| Pooling | `global_add_pool` (sum) | **yes** (was mean) |
+| everything else | identical, seed 6666 | no |
+
+**Result:** best (epoch 27) Train 82.15%, Valid 80.29%, **Test 75.59%** — tie with mean within noise; rockier early training.
+
+### q6_max (R10)
+
+Same as R8 with `global_max_pool`. **Result:** _(pending)_
+
+---
+
+## HW3 Quick Reference: Phase Dependencies
+
+```
+Phase 0 (compute & env)
+   │
+Phase 1 (Q1–Q4 inspection)
+   │
+Phase 2 (Q5: GCN, node classification) ──► Phase 3 (Q6: reuses GCN with return_embeds)
+                                                 │
+                                          Phase 4 (optional Q7)
+                                                 │
+                     Phase 5 (report, written throughout) ──► Phase 6 (packaging)
+```

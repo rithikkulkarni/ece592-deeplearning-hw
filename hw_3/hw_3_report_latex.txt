@@ -1,0 +1,319 @@
+\documentclass[10pt]{article}
+
+\usepackage[english]{babel}
+\usepackage[letterpaper,top=1.7cm,bottom=1.7cm,left=2cm,right=2cm,marginparwidth=1.5cm]{geometry}
+\usepackage{titlesec}
+\titlespacing*{\section}{0pt}{8pt}{4pt}
+\titlespacing*{\subsection}{0pt}{6pt}{2pt}
+\usepackage{amsmath}
+\usepackage{graphicx}
+\usepackage[colorlinks=true, allcolors=blue]{hyperref}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{enumitem}
+\usepackage{listings}
+\usepackage{subcaption}
+\usepackage{natbib}
+
+\lstset{
+    basicstyle=\ttfamily\small,
+    breaklines=true,
+    frame=single,
+    columns=fullflexible
+}
+\setlist{noitemsep, topsep=2pt}
+
+\title{Homework 2: ECE 592 Adv. Topics in Efficient Deep Learning}
+\author{Authored by Rithik Kulkarni}
+\date{}
+
+\begin{document}
+\maketitle
+\vspace{-1.5em}
+
+\section{Task 1: PyG and OGB basics (Q1-4)}
+\subsection*{Question 1}
+\begin{lstlisting}
+## Question 1: What is the number of classes and number of features in the ENZYMES dataset? (5 points)
+\end{lstlisting}
+
+Upon running my code, I got that the ENZYMES dataset has 6 classes and 3 features. The cell output is listed below.
+
+\begin{lstlisting}[caption={Q1 Output}, label={lst:q1_output}]
+ENZYMES dataset has 6 classes
+ENZYMES dataset has 3 features
+\end{lstlisting}
+
+\subsection*{Question 2}
+\begin{lstlisting}
+## Question 2: What is the label of the graph with index 100 in the ENZYMES dataset? (5 points)
+\end{lstlisting}
+
+Upon running my code, I got that the label of the graph with index 100 in the ENZYMES dataset is label 4. The cell output is listed below.
+
+\begin{lstlisting}[caption={Q2 Output}, label={lst:q2_output}]
+Data(edge_index=[2, 168], x=[37, 3], y=[1])
+Graph with index 100 has label 4
+\end{lstlisting}
+
+\subsection*{Question 3}
+\begin{lstlisting}
+## Question 3: How many edges does the graph with index 200 have? (5 points)
+\end{lstlisting}
+
+Upon running my code, I got that the graph with index 200 in the ENZYMES dataset has 53 edges. Since each undirected edge is stored twice in PyG because it has no separate representation for directed/undirected edges, I had to divide by 2 to get the true count of undirected edges. $a \rightarrow b$ and $b \rightarrow a$ would be the same edge for undirected graphs.
+
+\begin{lstlisting}[caption={Q3 Output}, label={lst:q3_output}]
+Graph with index 200 has 53 edges
+\end{lstlisting}
+
+\subsection*{Question 4}
+\begin{lstlisting}
+## Question 4: How many features are in the ogbn-arxiv graph? (5 points)
+\end{lstlisting}
+
+Upon running my code, I got that the ogbn-arxiv graph has 128 features. Each node is a paper, and its 128-dimensional feature vector is created from word embeddings of the paper's title and abstract. Unlike ENZYMES, ogbn-arxiv is a single large graph (169,343 nodes) rather than a collection of smaller graphs. The feature count can be read from the singular \texttt{Data} object rather than from a dataset. The cell output is listed below.
+
+\begin{lstlisting}[caption={Q4 Output}, label={lst:q4_output}]
+The ogbn-arxiv dataset has 1 graph
+Data(num_nodes=169343, x=[169343, 128], node_year=[169343, 1], y=[169343, 1], adj_t=[169343, 169343, nnz=1166243])
+The graph has 128 features
+\end{lstlisting}
+
+
+
+
+
+
+\section{Task 2: Node property prediction (Q5)}
+\subsection*{Question 5}
+\begin{lstlisting}
+## Question 5: What are your best_model validation and test accuracies? (20 points)
+\end{lstlisting}
+
+\subsubsection*{Implementation}
+I implemented the GCN using the same architecture given in the figure shown in the assignment instructions slides. The model has 3 layers with a hidden dimension of 256. The first layer maps the 128 input features to the 256, then the second layer maps 256 to 256, and the third one maps the 256 to the 40 output classes. Each of the first two convolutions (\texttt{GCNConv}) is followed up by BatchNorm, ReLU, and dropout ($p=0.5$). The final convolution is only followed up by \texttt{LogSoftmax}. over the class dimension. I made sure that dropout is applied with \texttt{training=self.training} so that it is always disabled during evaluation. The training is full-batch, so each step runs the entire graph through the model, but the loss is only computed on the training nodes.
+
+\subsubsection*{Baseline results}
+I first trained the plain architecture with the default hyperparameters (3 layers, hidden dimension 256, dropout 0.5, learning rate 0.01, 100 epochs). The best model was selected by validation accuracy, which peaked at epoch 96.
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lccc}
+\toprule
+Model & Train & Valid & Test \\
+\midrule
+Baseline GCN (epoch 96) & 73.53\% & 71.93\% & 71.61\% \\
+\bottomrule
+\end{tabular}
+\caption{Q5 baseline best model accuracies on ogbn-arxiv.}
+\label{tab:q5_baseline}
+\end{table}
+
+\begin{lstlisting}
+Saving Model Predictions
+Best model: Train: 73.53%, Valid: 71.93% Test: 71.61%
+\end{lstlisting}
+
+\subsubsection*{Observations}
+\begin{itemize}
+    \item The model didn't converge. The training loss continuously decreased every epoch all the way through epoch 100 (ended at 0.9155), and validation accuracy was also still slowly rising. Training finished before the model finished learning.
+    \item The training accuracy was only about 1.6\% higher than the validation accuracy, and both were still increasing. This signals that the model wasn't overfitting.
+    \item Test accuracy is consistently lower than the validation accuracy. The model is trained on older papers, validated on 2018 papers, and tested on 2019 papers. The test set is the furthest forward in time from the training data, which helps this make sense.
+\end{itemize}
+
+\subsubsection*{Enhancement: Residual Connections}
+This next experiment adds residual (skip) connections to the hidden layers. Whenever a layer's input and output have the same dimension, the layer's input is added back to its output. Residual connections allow each layer to learn a correction to its input rather than creating a fully new representation. This helps preserve node-specific information that gets diluted by repeated averaging. I kept all previous hyperparameters the same as the baseline.
+
+Only the middle layer currently uses a residual connection. For this run, I fixed the random seed to be 6666 so that the weight initialization and dropout masks would be reproducible.
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lcccc}
+\toprule
+Model & Best epoch & Train & Valid & Test \\
+\midrule
+Baseline GCN & 96 & 73.53\% & 71.93\% & 71.61\% \\
+GCN + residual & 100 & 73.11\% & 71.59\% & 70.57\% \\
+\midrule
+Difference & & $-0.42$ & $-0.34$ & $-1.04$ \\
+\bottomrule
+\end{tabular}
+\caption{Q5 baseline vs.\ residual best model accuracies on ogbn-arxiv.}
+\label{tab:q5_residual}
+\end{table}
+
+\begin{lstlisting}
+Saving Model Predictions
+Best model: Train: 73.11%, Valid: 71.59% Test: 70.57%
+\end{lstlisting}
+
+\subsubsection*{Residual Observations}
+\begin{itemize}
+    \item The residual model scored lower, but most of this difference seems to be noise than something real. Accuracies across the board dropped slightly.
+    \item The two runs started from different random initializations, so this is a comparison run-to-run as well as a slight architectural change.
+    \item It's likely that the residual connections had very little improvement to give. They are mainly to counter over-smoothing due to averaging, but that effect is already quite weak in a 3-layer network.
+    \item This model is also undertrained, reaching its best epoch at 100. This signals that an increase in epoch count is in order.
+\end{itemize}
+
+I removed the residual connections and returned to the plain default architecture suggested in the instructions. I simply increased the number of training epochs from 100 to 500, and will see if that helps (keeping the fixed seed of 6666 from the residual experiment).
+
+\subsubsection*{Enhancement: Longer Training (500 Epochs)}
+Since both previous runs seemed to have still been improving at the end of their training runs, I increased the number of epochs from 100 to 500 (in the hyperparameter cell that the notebook said was okay to change). I went back to the suggested GCN architecture and all other hyperparameters were the same.
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lcccccc}
+\toprule
+Model & Best epoch & Train & Valid & Test & Train$-$Valid & Valid$-$Test \\
+\midrule
+Baseline GCN, 100 epochs & 96 & 73.53\% & 71.93\% & 71.61\% & 1.60 & 0.32 \\
+GCN + residual, 100 epochs & 100 & 73.11\% & 71.59\% & 70.57\% & 1.52 & 1.02 \\
+Baseline GCN, 500 epochs & 490 & 79.81\% & 73.09\% & 71.55\% & 6.72 & 1.54 \\
+\bottomrule
+\end{tabular}
+\caption{Q5 best model accuracies across all experiments on ogbn-arxiv.}
+\label{tab:q5_all}
+\end{table}
+
+\begin{lstlisting}
+Saving Model Predictions
+Best model: Train: 79.81%, Valid: 73.09% Test: 71.55%
+\end{lstlisting}
+
+\subsubsection*{500 Epoch Observations}
+\begin{itemize}
+    \item Longer training improved the validation accuracy further, but not the test accuracy. This suggests that there is some generalization gap rather than classic overfitting.
+    \item Training accuracy continued to rise faster than the validation accuracy, created a substantial gap. This is not classic overfitting, however, because the validation accuracy never actually started decreasing again. This just shows that there's large diminishing returns to extra training, and that the extra training just went into fitting the specific training nodes rather than improving generalization.
+    \item The original baseline and longer training reached similar best test accuracies, so training longer does not seem to be the sole solution.
+\end{itemize}
+
+\subsubsection*{Enhancement: Lower Learning Rate}
+The test accuracy from the 500-epoch run seemed to fluctuate a lot between rpochs, so the epoch with best validation accuracy sort of landed on a ``random'' point. To make the training more stable, I halved the learning rate (0.01 to 0.005), keeping the 500 epochs and the rest of the architecture.
+
+\begin{lstlisting}
+Saving Model Predictions
+Best model: Train: 78.93%, Valid: 73.18% Test: 71.83%
+\end{lstlisting}
+\\
+This run gave the highest peak validation accuracy (73.18\% at epoch 391) as well as the highest test accuracy for the best model (71.83\%) out of any experiment so far. The 10 epochs with the highest validation accuracy all had test accuracies between 71.53\% and 72.21\%, which when compared to the 71.05\%--71.94\% in the earlier 500-epoch run, is definitely better. This signals that the lower learning rate increased our performance slightly.
+
+Additionally, we achieved best test accuracies of $>$72\%, but these were from models with lower validation accuracies. We cannot reliably pick a model based on its test accuracy since that is unknown when we deploy something, so we can only assume the best validation accuracy will result in the best test accuracy. This means that we must choose the best validation accuracy model, which gave us a best test accuracy of 71.83\%.
+
+\subsubsection*{Enhancement: Higher Dropout}
+Every run so far has showed the same pattern of training accuracy climbing higher and higher while the validation and test accuracies barely moved, which meant the extra training was mostly just spent fitting to the training nodes. To fight this, I increased dropout from 0.5 to 0.6 while keeping everything the same. The goal here was not to see us suddenly beat the 72\% baseline, but to hopefully see a decrease in the gap between training and validation accuracies.
+
+\begin{lstlisting}
+Saving Model Predictions
+Best model: Train: 77.12%, Valid: 73.06% Test: 71.66%
+\end{lstlisting}
+\\
+Turns out that the higher dropout worked as intended. The training-validation gap decreased from the previous 5.75\% down to 4.06\%, while the validation accuracy and test accuracy stayed roughly the same. On its own, this doesn't improve our performance outright, but it did reduce the model's tendency to overfit to/memorize the training nodes. This now leaves room for us to increase the model's capacity without the risk of overfitting, which is what gave me the idea for my next experiment.
+
+\subsubsection*{Enhancement: Wider Hidden Layers}
+Keeping dropout at 0.6, I increased the hidden dimension from 256 to 512, so the model layers became $128 \rightarrow 512 \rightarrow 512 \rightarrow 40$. This means every node has a larger representation (around 3 times as many total parameters), which lets the model encode finer details regarding the 40 classes. Without having increased dropout, this wider model would likely overfit.
+
+\begin{lstlisting}
+Saving Model Predictions
+Best model: Train: 80.36%, Valid: 73.41% Test: 72.19%
+\end{lstlisting}
+\\
+This run achieved our target baseline of $>$72\% accuracy for our best model (picked by validation accuracy). Our training-validation gap is back up to 6.95\%, but this is expected since the wider model has more capacity to directly fit training nodes, but our overall accuracy improved.
+
+\subsubsection*{Q5 Summary}
+\begin{table}[h]
+\centering
+\begin{tabular}{lcccccc}
+\toprule
+Experiment & Best epoch & Train & Valid & Test & Train$-$Valid & Valid$-$Test \\
+\midrule
+Baseline (lr 0.01, 100 epochs) & 96 & 73.53\% & 71.93\% & 71.61\% & 1.60 & 0.32 \\
++ residual connections & 100 & 73.11\% & 71.59\% & 70.57\% & 1.52 & 1.02 \\
+$\uparrow$ 500 epochs & 490 & 79.81\% & 73.09\% & 71.55\% & 6.72 & 1.54 \\
+$\downarrow$ lr 0.005 & 391 & 78.93\% & 73.18\% & 71.83\% & 5.75 & 1.35 \\
+$\uparrow$ dropout 0.6 & 365 & 77.12\% & 73.06\% & 71.66\% & 4.06 & 1.40 \\
+$\uparrow$ hidden dim 512 & 404 & 80.36\% & \textbf{73.41\%} & \textbf{72.19\%} & 6.95 & 1.22 \\
+\bottomrule
+\end{tabular}
+\caption{All Q5 experiments on ogbn-arxiv. Each row builds on the one above it, except the residual run, which was reverted right after its experiment.}
+\label{tab:q5_summary}
+\end{table}
+
+My final Q5 model is a 3-layer GCN with hidden dimension 512, dropout 0.6, learning rate 0.005, and 500 epochs. Its \texttt{best\_model} validation accuracy is \textbf{73.41\%} and its test accuracy is \textbf{72.19\%}. This configuration was chosen because it has the highest validation accuracy of all experiments, not because of its test accuracy. The margin above 72\% is small (0.19\%) compared with the epoch-to-epoch fluctuations seen throughout training, so a rerun on different hardware could land slightly above or below this value.
+
+\section{Task 3: Graph property prediction (Q6)}
+\subsection*{Question 6}
+\begin{lstlisting}
+## Question 6: What are your best_model validation and test ROC-AUC scores? (20 points)
+\end{lstlisting}
+
+\subsubsection*{Implementation}
+In this graph classification problem, each molecule is represented by a separate graph (atoms are nodes, chemical bonds are edges). The goal is to do binary classification to determine whether a molecule inhibits HIV replication or not.
+
+\subsubsection*{Baseline results}
+The best model is selected by validation ROC-AUC, which peaked at epoch 26. I ran this first experiment with default hyperparameters using global mean pooling and a random seed of 6666 (same seed as earlier).
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lcccc}
+\toprule
+Model & Best epoch & Train & Valid & Test \\
+\midrule
+GCN + mean pooling & 26 & 83.65\% & 79.90\% & 75.86\% \\
+\bottomrule
+\end{tabular}
+\caption{Q6 baseline best model ROC-AUC on ogbg-molhiv.}
+\label{tab:q6_baseline}
+\end{table}
+
+\begin{lstlisting}
+Saving Model Predictions
+Saving Model Predictions
+Best model: Train: 83.65%, Valid: 79.90% Test: 75.86%
+\end{lstlisting}
+
+\subsubsection*{Baseline Observations}
+\begin{itemize}
+    \item The validation ROC-AUC is noisy between epochs. One example is that it reached 79.40\% at epoch 15, then dropped all the way to 72.17\% at epoch 21, and then rose back up to 79.90\% at epoch 26. The class imbalance could be playing a major role in this noise, and this means the epoch that we select as the best model could potentially have been based on random chance/luck.
+    \item There is a large gap between validation and test ROC-AUC (roughly 4\%). This gap is much larger than the gap we saw in the second assignment task.
+    \item At the end of this training run, the model was still improving. The training ROC-AUC was steadily rising and still increasing at epoch 30, where it reached 84.64\%.
+\end{itemize}
+
+This first test is above the sanity check of 74\% but still well below the target baseline of 77\%. The next step will be trying the other two global pooling methods (sum and max) to see if they give a better test ROC-AUC.
+
+\subsubsection*{Enhancement: Sum Pooling}
+Mean pooling averages the atom embeddings, so two molecules with the same proportions of atom types look similar even if one is much larger or contains more copies of a chemical group. Sum pooling instead adds up the atom embeddings, so the graph embedding keeps information about counts and molecule size. I replaced \texttt{global\_mean\_pool} with \texttt{global\_add\_pool} and kept everything else the same, including the seed.
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lcccc}
+\toprule
+Pooling & Best epoch & Train & Valid & Test \\
+\midrule
+Mean & 26 & 83.65\% & 79.90\% & 75.86\% \\
+Sum & 27 & 82.15\% & 80.29\% & 75.59\% \\
+\bottomrule
+\end{tabular}
+\caption{Q6 best model ROC-AUC on ogbg-molhiv with mean vs.\ sum pooling.}
+\label{tab:q6_sum}
+\end{table}
+
+\begin{lstlisting}
+Saving Model Predictions
+Saving Model Predictions
+Best model: Train: 82.15%, Valid: 80.29% Test: 75.59%
+\end{lstlisting}
+
+\subsubsection*{Sum Pooling Observations}
+\begin{itemize}
+    \item Sum pooling ended up very close to mean pooling. Validation ROC-AUC was slightly higher (80.29\% vs.\ 79.90\%) and test ROC-AUC was slightly lower (75.59\% vs.\ 75.86\%). Given how noisy validation ROC-AUC is between epochs, these differences are too small to say that either pooling method is better.
+    \item Training started off noticeably worse and was less stable. After the first epoch, training ROC-AUC was 62.88\% with sum pooling compared to 72.07\% with mean pooling, and validation ROC-AUC swung even more widely (e.g.\ 74.01\% at epoch 8, 64.51\% at epoch 11, and 66.25\% at epoch 21). A likely reason is that summed embeddings grow with the number of atoms, so the scale of the inputs to the final linear layer varies a lot between small and large molecules, which makes the model harder to train early on.
+    \item The validation--test gap was slightly larger (4.70\% vs.\ 4.04\%), so the extra size and count information did not help the model generalize to the structurally different molecules in the test set.
+\end{itemize}
+
+Sum pooling did not improve the test ROC-AUC, so I next tried max pooling.
+
+
+
+
+\end{document}
