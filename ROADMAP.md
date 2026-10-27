@@ -1169,3 +1169,207 @@ Phase 2 (Q5: GCN, node classification) ──► Phase 3 (Q6: reuses GCN with re
                                                  │
                      Phase 5 (report, written throughout) ──► Phase 6 (packaging)
 ```
+
+---
+---
+
+# ECE 592 HW4 — Training Transformers Roadmap
+
+**Deadline:** 4 Nov 2026
+**Deliverables:** one zip `HW4_UNITYID.zip` (likely `HW4_rrkulka3.zip`, matching HW3 — confirm),
+containing exactly 2 files:
+- the completed notebook **with visible cell outputs** (ours: `hw_4/ECE592HW4_rrkulka3.ipynb`)
+- one `.txt` file of generation results: **exactly 80 lines** (one per test image), **400
+  space-separated integers per line**
+
+**No report this time** — the notebook and the `.txt` are the whole submission.
+
+**Task:** train a decoder-only transformer to do next-token prediction over Pokémon images
+flattened to 400-token sequences (20×20 pixels, 167 color classes = vocab). At test time the
+model is given the first 60% of an image (240 tokens) and must autoregressively generate the
+remaining 160.
+
+**Dataset (HuggingFace Hub, loaded in the notebook):** 632 train / 80 dev / 80 test images.
+`lca0503/ml2025-hw4-pokemon` (images) and `lca0503/ml2025-hw4-colormap` (token → RGB).
+
+**Grading:** 10 points. A baseline only counts if **FID and PDR both pass at the same time**.
+
+| Baseline | FID | PDR | Est. training time | Points |
+|---|---|---|---|---|
+| Simple | ≤ 86.0 | ≥ 0.1 | ~10 min | 2 |
+| Medium | ≤ 80.0 | ≥ 0.5 | ~20 min | 2 |
+| Strong | ≤ 73.0 | ≥ 0.85 | ~40 min | 2 |
+| Code submission | – | – | – | 4 |
+
+- **FID** (lower is better): Fréchet distance between Inception features of real vs. generated images.
+- **PDR** (higher is better): fraction of generated images a TA-trained classifier labels "Pokémon".
+- Both are computed by the TAs on our `.txt`. **We get no FID/PDR locally** — the notebook only
+  reports dev-set reconstruction accuracy, which the slides say does *not* track generation quality.
+
+**Suggested hyperparameter ranges (from slides):** epochs 30–150 (default 50), lr 1e-5–1e-2
+(1e-3), batch size 8–64 (16), weight decay 0.1–1e-5 (0.1), heads 1–12 (2), embedding dim 32–512
+(64), layers 1–12 (2).
+
+Per `CLAUDE.md`: every meaningful design choice below is an **open decision** to be made by
+you (2–3 options with tradeoffs presented first), not pre-decided here.
+
+---
+
+## HW4 Phase 0 — Environment & File-Retrieval Workaround
+
+**Goal:** Get the notebook running on a Colab GPU from VS Code, and decide how the result
+`.txt` (and any checkpoints) get from the Colab VM to your machine.
+
+- [ ] Connect the notebook to a Colab GPU runtime (T4) as a VS Code kernel, as in HW3.
+- [ ] Run the setup cells (`pip install datasets==3.3.2`, imports, `nvidia-smi`) and confirm GPU is visible.
+- [ ] Decide what to do with cell 5 (`drive.mount`): the dataset comes from the HF Hub, so Drive is
+      **not needed for data** — it's only useful if we choose Drive as the file-retrieval route.
+- [ ] **Open decision — getting files out of Colab.** The notebook writes
+      `reconstructed_results.txt` and `checkpoints/best_model.pth` to the *Colab VM's* disk, which we
+      can't browse from VS Code. Candidate options (tradeoffs to be presented before choosing):
+  - Write outputs into the mounted Google Drive (`/content/drive/MyDrive/...`), then download from Drive.
+  - Print the file contents in a cell output (80 lines × 400 ints ≈ 100 KB), copy into a local `.txt`,
+    and validate it locally.
+  - Use `google.colab.files.download(...)` (may not work through the VS Code Colab kernel — **unverified**).
+  - Base64-encode the file into a cell output and decode locally (robust, but clunky).
+- [ ] Whatever route is chosen: add a **local validator** (80 lines, 400 ints each, all ints in
+      0–166) so a corrupted copy is caught before submission.
+- [ ] Decide checkpoint persistence: Colab runtimes can disconnect and wipe `checkpoints/`.
+
+**Done when:** setup cells run on GPU, and we've tested the full "produce a file in Colab → read it
+locally" path with a dummy file.
+
+---
+
+## HW4 Phase 1 — Understand the Data & Scaffold (no changes yet)
+
+**Goal:** Read and run the provided notebook as-is so every piece is understood before modifying it.
+
+- [ ] Run the data cells; check sizes (632/80/80), `num_classes` (should be 167), and visualize
+      train/test grids (cells 22–23).
+- [ ] Understand `PixelSequenceDataset` modes: `train` → `input = seq[:-1]`, `label = seq[1:]`
+      (shifted by one); `dev` → input is `seq[:-160]` (240 tokens), label is the last 160;
+      `test` → input only (240 tokens).
+- [ ] Understand the training loop: cross-entropy over all 399 positions; **checkpoint chosen by
+      lowest *training* loss**, not dev accuracy.
+- [ ] Understand how dev "reconstruction accuracy" is computed: `model.generate` to
+      `max_length=400`, compare last 160 tokens to labels (greedy decoding by default).
+- [ ] Understand the inference cell and the output format it writes.
+- [ ] **Things noticed in the scaffold to flag (not yet acted on):**
+  - `n_ctx: 128` in the GPT-2 config vs. 400-token sequences — HF's `GPT2Config` uses `n_positions`
+    (400) for the position table, so `n_ctx` may be inert, but **verify** rather than assume.
+  - Cell 40 is an empty code cell at the end.
+  - The training loop runs a full `generate` pass over the dev set every epoch, which adds real
+    time per epoch — relevant to the ~10/20/40 min budgets.
+
+**Done when:** you can explain, without looking, what a training batch, a dev batch, and a test
+batch each look like, and what the model is asked to produce at inference.
+
+---
+
+## HW4 Phase 2 — Simple Baseline (FID ≤ 86, PDR ≥ 0.1)
+
+**Goal:** Run the sample GPT-2 config end-to-end and produce a valid `.txt`.
+
+- [ ] Run the sample code with defaults (2 layers, 64-dim, 2 heads, 50 epochs, lr 1e-3).
+- [ ] Generate `reconstructed_results.txt`; retrieve it via the Phase 0 route; run the validator.
+- [ ] Visualize generated test images (cell 38) as a sanity check that outputs look image-like.
+- [ ] Record the config and outcome in the HW4 Experiment Log.
+
+**Done when:** a valid 80×400 `.txt` exists locally and generated images visibly resemble the
+60%-prefix + plausible completion.
+
+> **Caveat:** we can't compute FID/PDR ourselves, so "passing" a tier can't be confirmed locally —
+> only judged by eye and by proxy metrics (see Phase 5).
+
+---
+
+## HW4 Phase 3 — Medium Baseline (FID ≤ 80, PDR ≥ 0.5)
+
+**Goal:** Tune training hyperparameters and model size within the same GPT-2 family.
+
+- [ ] **Open decision — tuning strategy** (e.g. one-variable-at-a-time vs. a small grid vs. scaling
+      model size first). Options and tradeoffs to be presented.
+- [ ] Candidates from the slides: epochs, learning rate, batch size, weight decay, heads, embedding
+      dim, layers (ranges above). Note `n_embd` must be divisible by `n_head`.
+- [ ] Keep an eye on overfitting: only 632 training images, so a bigger model can memorize.
+- [ ] Log every run in the Experiment Log.
+
+**Done when:** a config is chosen with a documented rationale and its `.txt` is generated/validated.
+
+---
+
+## HW4 Phase 4 — Strong Baseline (FID ≤ 73, PDR ≥ 0.85)
+
+**Goal:** Improve generation quality beyond what GPT-2 hyperparameter tuning alone gives.
+
+- [ ] **Open decision — architecture.** Slides recommend Llama or Mistral (via `LlamaConfig` /
+      `MistralConfig`; the scaffold also mentions Qwen). Tradeoffs to be presented — e.g. rotary
+      position embeddings vs. GPT-2's learned absolute positions, RMSNorm vs. LayerNorm, SwiGLU MLP,
+      and parameter count at a given width.
+- [ ] **Open decision — checkpoint selection.** The scaffold saves the lowest *training* loss, which
+      the slides say is a poor proxy for generation quality. Options to weigh: keep as-is; select on
+      dev reconstruction accuracy; train the optional Pokémon/not-Pokémon classifier (the slides' hint)
+      and use it to score checkpoints.
+- [ ] **Open decision — decoding strategy** at inference (greedy default vs. sampling with
+      temperature / top-k / top-p). Greedy may produce repetitive/blocky completions; sampling adds
+      diversity but risks noisy pixels — this affects FID and PDR differently.
+- [ ] If a classifier is used: decide what negatives look like (e.g. truncated/garbled images, per the
+      slides' figure) and note it is only a proxy for the TAs' classifier.
+- [ ] Respect the ~40 min training-time estimate as a rough budget.
+
+**Done when:** a final model + decoding choice is justified, and its `.txt` is generated/validated.
+
+---
+
+## HW4 Phase 5 — Evaluation Proxies (optional, decide whether worthwhile)
+
+**Goal:** Get *some* signal on FID/PDR since the TAs' numbers aren't available.
+
+- [ ] **Open decision:** whether to compute a local FID (e.g. `torchmetrics`/`pytorch-fid` using
+      Inception on upscaled 20×20 images, against the real images). The TAs' exact FID
+      implementation is unknown, so absolute numbers may not match — useful for *relative*
+      comparisons between our own runs only. **Flag:** unsure how the TAs preprocess images.
+- [ ] Reuse the Phase 4 classifier (if built) as a local PDR proxy.
+- [ ] Always eyeball the 80 generated images alongside the real ones.
+
+**Done when:** we've decided whether proxies are worth the effort, and if so have one for
+comparing runs.
+
+---
+
+## HW4 Phase 6 — Final Packaging & Submission Checklist
+
+- [ ] Final notebook runs top-to-bottom with **visible outputs** (training logs, generated-image
+      grid, "results saved" message).
+- [ ] The notebook that's submitted is the one that produced the submitted `.txt` (easy to mismatch
+      after multiple experiments).
+- [ ] `.txt` validated locally: exactly 80 lines, 400 ints per line, all values in 0–166.
+- [ ] Generated sequences keep the given 240-token prefix intact (model output from `generate`
+      includes the prompt) — check this explicitly.
+- [ ] Zip named `HW4_UNITYID.zip` containing only the notebook + `.txt`; confirm the exact UnityID
+      form and whether the notebook needs renaming.
+- [ ] Submit before **4 Nov 2026**.
+
+---
+
+## HW4 Experiment Log
+
+Every real training run gets an entry here with its exact configuration. Keep this a quick-reference
+config log; each entry records config, decisions made, and outcome.
+
+_(No experiments yet.)_
+
+---
+
+## HW4 Quick Reference: Phase Dependencies
+
+```
+Phase 0 (env + file retrieval workaround)
+   │
+Phase 1 (understand scaffold) ──► Phase 2 (Simple) ──► Phase 3 (Medium) ──► Phase 4 (Strong)
+                                                                               │
+                                          Phase 5 (optional FID/PDR proxies) ◄─┘
+                                                                               │
+                                                              Phase 6 (packaging & submission)
+```
