@@ -387,7 +387,27 @@ the expected values above; tail stats and visuals vs. exp_1-4; run time (~30 × 
   The ceiling now looks set by something other than the LR recipe (regularization, data size,
   model choice, or greedy decoding) — not verified.
 - Visual impression of the grid: _(add yours)_
-- FID / PDR: **unknown** (TA-computed) — the proxy section (next) is meant to give a rough read.
+- FID / PDR: **unknown** (TA-computed). First proxy read (cells 41-45, run after exp_5; first run
+  of the proxy section — worked without errors, `pytorch-fid` installed and downloaded its weights
+  on Colab):
+
+  | Proxy metric | Value |
+  |---|---|
+  | Detector sanity: real dev judged Pokémon | 0.875 (wanted ~1) |
+  | Detector sanity: corrupted dev rejected — flat color / noise / swapped tail | 0.988 / 0.988 / 0.875 |
+  | **Proxy PDR, generated test images** | **0.762** (mean prob 0.716) |
+  | Proxy PDR, blank-white-bottom control | 0.000 |
+  | Proxy PDR, real dev ceiling | 0.875 |
+  | **Proxy FID, generated vs 712 real** | **82.95** |
+  | Proxy FID, blank-white-bottom control | 101.77 |
+  | Proxy FID, real dev vs real train floor (n=80) | 63.76 |
+
+  → Generated images sit about halfway between a blank bottom and real-vs-real on FID, and just
+  under the detector's own real-image ceiling on PDR. Detector training loss ended at 0.068, so it
+  is fairly overfit to the 632 training positives (it rejects 12.5% of held-out real images).
+  These proxies are for comparing runs only; the TAs' FID/PDR use unknown reference sets and a
+  classifier we can't see, so these numbers cannot be read against the 86/80/73 or 0.1/0.5/0.85
+  thresholds.
 
 ---
 
