@@ -15,3 +15,6 @@ hw_2/kaggle_output/
 *_best.ckpt
 *_log.txt
 submission.csv
+
+# Local venv for HW4 proxy scoring script
+hw_4/.venv/

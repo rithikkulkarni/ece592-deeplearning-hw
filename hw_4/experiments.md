@@ -33,6 +33,48 @@ these confirm that a tier passes.
 | exp_4 | Llama, 8L / 384d / 6h, attn dropout 0.3 | 14,290,560 | 100 | 3e-4 | 0.0783 (ep 100) | 0.3916 (ep 85) | done — saved ckpt = ep 12, dev loss **1.4533** |
 | exp_5 | exp_4 + warmup/cosine LR schedule, 30 epochs | 14,290,560 | 30 | 3e-4 peak | 0.7470 (ep 30, dropout on) | 0.4010 (ep 15) | done — saved ckpt = ep 12, dev loss 1.4652 |
 
+## Proxy scores (local `score_proxies.py`, all runs scored by the same detector)
+
+Run: `hw_4/.venv/Scripts/python.exe score_proxies.py exp_1_results.txt ... exp_5_results.txt`
+(~1 min on CPU; writes `proxy_scores.csv`). **Local stand-ins, not the TAs' numbers — compare
+runs with each other only.** One detector is trained per invocation, so rows are comparable within
+a table, but a re-run (or the notebook's own Colab-trained detector) gives somewhat different PDR.
+
+| Run | Proxy PDR | Mean prob | Proxy FID | What it is |
+|---|---|---|---|---|
+| exp_1 | 0.287 | 0.296 | 81.99 | GPT-2 tiny, defaults |
+| exp_2 | 0.450 | 0.438 | **71.04** | GPT-2 4.9M, 100 ep (heavily overfit ckpt) |
+| exp_3 | 0.225 | 0.227 | 79.03 | exp_2 + dropout 0.3, dev-loss ckpt (ep 52) |
+| exp_4 | 0.575 | 0.573 | 82.94 | Llama 14.3M, ckpt ep 12 |
+| exp_5 | **0.637** | 0.607 | 82.95 | Llama + warmup/cosine, ckpt ep 12 |
+| *blank-bottom control* | 0.000 | – | 101.77 | prefix + white bottom (bad end) |
+| *real dev reference* | 0.850 (ceiling) | – | 63.76 (floor) | real dev vs real train, n=80 |
+
+Detector sanity (this table's detector): real dev judged Pokémon 0.850; corrupted dev rejected
+0.988 (flat) / 1.000 (noise) / 0.938 (swapped tail).
+
+Reading it:
+- **PDR and FID disagree.** PDR ranks the Llama runs best (exp_5 > exp_4 > exp_2 > exp_1 > exp_3),
+  while FID ranks the overfit exp_2 best (71.04) and puts both Llama runs at ~83, near exp_1.
+  No run is good on both at once, and the TAs require both to pass.
+- exp_2's FID plausibly comes from its higher tail color variety (14.2 colors per tail vs ~4-7),
+  which FID's feature statistics reward even if those tails are memorized fragments. Hypothesis,
+  not verified.
+- Consistency with the notebook's own run on exp_5: FID **82.95 in both** (and the blank control /
+  floor, 101.77 / 63.76, are identical) — the FID side is deterministic and reproducible. PDR was
+  **0.762 in the notebook vs 0.637 here** for the same file, with real-dev ceilings of 0.875 vs
+  0.850: a different detector draw moves PDR by ~0.12, so PDR differences of that size between
+  *tables* are noise; only compare rows within one invocation, and treat gaps of a few hundredths
+  between rows as unreliable (detector seed variance not measured).
+- FID noise at n=80 is not measured either; 82.94 vs 82.95 (exp_4 vs exp_5) is a tie, and
+  differences of a few points elsewhere may be noise.
+
+Setup notes: venv at `hw_4/.venv` (gitignored) with torch 2.14.1 (CPU), pytorch-fid 0.3.0,
+datasets **5.1.0**. The notebook's pinned `datasets==3.3.2` fails to load data on Python 3.14
+(`dill` pickling error: `Pickler._batch_setitems() takes 2 positional arguments but 3 were given`),
+so the venv uses a newer `datasets`; the loaded data was checked to match (632/80/80 images, 167
+colors, 240-token test prefixes). The notebook is unchanged (still pins 3.3.2 on Colab).
+
 ---
 
 ## exp_1 — Sample defaults (baseline run)
