@@ -32,6 +32,7 @@ these confirm that a tier passes.
 | exp_3 | exp_2 + dropout 0.3 + dev-loss checkpointing | 4,884,224 | 100 | 3e-4 | 0.9507 (ep 100, dropout on) | 0.4134 (ep 4) | done — saved ckpt = ep 52, dev loss 1.566 |
 | exp_4 | Llama, 8L / 384d / 6h, attn dropout 0.3 | 14,290,560 | 100 | 3e-4 | 0.0783 (ep 100) | 0.3916 (ep 85) | done — saved ckpt = ep 12, dev loss **1.4533** |
 | exp_5 | exp_4 + warmup/cosine LR schedule, 30 epochs | 14,290,560 | 30 | 3e-4 peak | 0.7470 (ep 30, dropout on) | 0.4010 (ep 15) | done — saved ckpt = ep 12, dev loss 1.4652 |
+| exp_6 | exp_5 checkpoint (reproduced exactly) + **sampling** (6a/6b, 2 seeds each) | 14,290,560 | – | – | – | – | done — proxy FID 82.95 → 66-70, proxy PDR up under both detectors |
 
 ## Proxy scores (local `score_proxies.py`, all runs scored by the same detector)
 
@@ -74,6 +75,64 @@ datasets **5.1.0**. The notebook's pinned `datasets==3.3.2` fails to load data o
 (`dill` pickling error: `Pickler._batch_setitems() takes 2 positional arguments but 3 were given`),
 so the venv uses a newer `datasets`; the loaded data was checked to match (632/80/80 images, 167
 colors, 240-token test prefixes). The notebook is unchanged (still pins 3.3.2 on Colab).
+
+## Proxy scores v2 (stronger detectors; `score_proxies.py` rewritten; step 1 of the Strong push)
+
+Changes vs. the v1 table above: seven corruption families (flat, noise, swap, mirror, shift,
+rowshuffle, smear; cut always at row 12), horizontally flipped real images added as positives, a
+corruption is rejected if it leaves an image unchanged (e.g. mirroring an all-white tail), and
+**two detectors** averaged over **3 seeds each**: A = CNN trained on flat/noise/swap/mirror/shift;
+B = MLP on the flattened image trained on flat/noise/swap/rowshuffle/smear. Run: 9 files, ~minutes
+on CPU; log `proxy_v2_run.log`, table `proxy_scores_v2.csv`. v1 and v2 numbers are **not**
+comparable (different detectors).
+
+Detector check on held-out dev images (mean over 3 seeds; `*` = family in that detector's training set):
+
+| | A (CNN) | B (MLP) |
+|---|---|---|
+| real dev accepted | 0.854 | 0.792 |
+| flipped real dev accepted | 0.854 | 0.800 |
+| rejected: flat | 0.963* | 0.996* |
+| rejected: noise | 0.987* | 0.954* |
+| rejected: swap | 0.942* | **0.229*** |
+| rejected: mirror | 0.750* | 0.212 |
+| rejected: shift | 0.912* | 0.383 |
+| rejected: rowshuffle | 0.842 (unseen) | 0.804* |
+| rejected: smear | 0.517 (unseen) | 0.987* |
+
+| File | PDR A (mean (std)) | PDR B | Proxy FID |
+|---|---|---|---|
+| exp_1 greedy tiny GPT-2 | 0.354 (0.02) | 0.400 (0.07) | 81.99 |
+| exp_2 GPT-2 4.9M, overfit | 0.333 (0.04) | **0.858** (0.06) | 71.04 |
+| exp_3 GPT-2 + dropout, dev-loss ckpt | 0.242 (0.02) | 0.325 (0.06) | 79.03 |
+| exp_4 Llama greedy | 0.667 (0.02) | 0.567 (0.07) | 82.94 |
+| exp_5 Llama + cosine, greedy | 0.662 (0.09) | 0.533 (0.11) | 82.95 |
+| exp_6a_s0 (T 0.8, top-k 50) | 0.742 (0.06) | 0.725 (0.07) | 70.48 |
+| exp_6a_s1 | 0.817 (0.03) | 0.700 (0.05) | 67.11 |
+| exp_6b_s0 (T 1.0, top-p 0.9) = exp_7 submission | 0.692 (0.06) | 0.721 (0.04) | 67.15 |
+| exp_6b_s1 | 0.758 (0.06) | 0.750 (0.10) | 66.17 |
+| *real dev ceiling / FID floor* | 0.854 | 0.792 | 63.76 |
+
+Reading it (honest, mixed outcome):
+- **The detectors did not get better at accepting real images**: ceilings 0.854 (A) and 0.792 (B),
+  no higher than v1's 0.85-0.875, and flip augmentation did not raise them. With 632 real
+  positives and an 80-image dev set the acceptance estimate itself is only good to ~±0.04, and
+  per-seed PDR std is 0.02-0.11.
+- **Detector A is a decent judge of seams/coherence**: it rejects swap 0.94 and also catches the
+  *unseen* rowshuffle (0.84) and, partly, mirror/shift — but only 0.52 of the unseen smear family.
+- **Detector B (MLP) is a weak judge of coherence**: it catches statistically obvious corruptions
+  (flat, noise, smear, rowshuffle) but rejects only 0.23 of swapped tails even though it trained on
+  swap, and 0.21-0.38 of mirror/shift. It is lenient toward real-looking-but-wrong tails.
+- **A and B disagree sharply on exp_2** (A 0.33, B 0.86). Plausible reading (unverified): exp_2's
+  overfit tails are fragments that look statistically like real tails but don't fit the prefix —
+  exactly what B can't see and A partly can.
+- **Sampling still wins, but the PDR evidence is weaker than v1 suggested.** FID: 82.95 → 66-70
+  (unchanged, deterministic). PDR: greedy exp_5 0.662 (A) / 0.533 (B) vs sampled 0.69-0.82 (A,
+  mean ~0.75) / 0.70-0.75 (B, mean ~0.72): about +0.09 under A (within seed noise for some files,
+  e.g. 6b_s0 0.692 vs 0.662) and +0.19 under B. The two sampling settings are not separable.
+- **Headroom is the problem**: sampled PDR under A (0.69-0.82) is already near A's ceiling (0.854);
+  a detector with ceiling ~0.85 can't show whether a 0.85 PDR on the TAs' classifier is reachable,
+  and best-of-n can't be demonstrated to help beyond the ceiling.
 
 ---
 
@@ -450,6 +509,228 @@ the expected values above; tail stats and visuals vs. exp_1-4; run time (~30 × 
   These proxies are for comparing runs only; the TAs' FID/PDR use unknown reference sets and a
   classifier we can't see, so these numbers cannot be read against the 86/80/73 or 0.1/0.5/0.85
   thresholds.
+
+---
+
+## exp_6 — Sampling vs. greedy decoding on the exp_5 checkpoint
+
+No retraining. The proxy scores (see "Proxy scores" above) showed PDR and FID disagreeing: the
+Llama runs (exp_4/5) have the best proxy PDR but a middling FID (~83), while exp_2's high tail
+variety gave the best FID (71). Greedy decoding always takes the single most likely token, which
+collapses completions toward white/repeated runs; sampling should add variety. Question: can
+sampling raise FID quality without losing the coherence PDR rewards? Settings and seed counts
+chosen by the user from the options presented (A+B with two seeds each, the assistant's lean).
+
+| Variable | Value | Changed from exp_5? |
+|---|---|---|
+| Model / checkpoint | exp_5's recipe (Llama 14.3M, epoch 12, dev loss 1.4652). Planned as "load the saved checkpoint, no retraining"; the Colab session had expired, so the full run retrained it — and reproduced exp_5 exactly (see Result) | no |
+| Decoding | `do_sample=True`; **6a**: temperature 0.8, top_k 50 · **6b**: temperature 1.0, top_p 0.9, top_k 0 (disabled) | **yes** (was greedy) |
+| Seeds | 0 and 1 for each setting → 4 outputs: `6a_s0`, `6a_s1`, `6b_s0`, `6b_s1` | **yes** (greedy is deterministic) |
+| Everything else | `max_length=400`, same test prefixes | no |
+
+Notebook edits: cells 46-48 appended (markdown header; a generation cell that loads the checkpoint
+and runs the four sampling configurations, checking each result is 80 × 400; a print cell that
+emits each result between `===BEGIN_SUBMISSION:<label>===` markers). Cell 37's greedy path is
+unchanged, so exp_5's output stays reproducible. `extract_submission.py` gained `--label` (and now
+joins a cell's output chunks before searching); tested on synthetic notebooks (labeled block, a
+block split across chunks, missing label, truncation) and on the real notebook's unlabeled block.
+
+To extract and score (after running cells 47-48 and saving the notebook):
+```
+python extract_submission.py --label 6a_s0 --out exp_6a_s0_results.txt   # likewise 6a_s1, 6b_s0, 6b_s1
+.venv/Scripts/python.exe score_proxies.py exp_5_results.txt exp_6a_s0_results.txt ... exp_6b_s1_results.txt
+```
+
+Flagged / not verified:
+- Needs the Colab session from exp_5 still alive with its checkpoint on disk; cells 47-48 only
+  need variables already in memory (`model`, `save_dir`, `test_dataloader`, `device`, `set_seed`).
+- `top_k=0` is meant to disable top-k in `generate()` (its default is 50); not verified on the
+  runtime's `transformers` version — if `generate` errors or warns about it, check this first.
+- ~340 KB of printed output across four blocks; if the saved notebook truncates it, the extraction
+  script reports a missing END marker (the data stays in memory, so re-printing is cheap).
+- Proxy numbers for a sampled file depend on the random draw; the two seeds per setting are there
+  to show how much that moves them (alongside the unmeasured detector-seed noise).
+
+**What we'd watch for:** proxy FID below exp_5's 82.95 and proxy PDR not dropping below exp_5's
+0.637 (same script run, same detector); how far apart the two seeds of one setting land; tail stats
+(colors per tail, longest repeated run, white share) vs. greedy; the visual grids.
+
+**Result**
+- Run in browser Colab (the VS Code Colab extension ran out of GPU quota); the downloaded notebook
+  is `hw_4/ECE592HW4_colab.ipynb` (all 49 cells, outputs included). The fresh session meant the
+  model was **retrained** with the exp_5 recipe rather than loading a saved checkpoint — and it
+  reproduced exp_5 **exactly**: same dev-loss trajectory (best 1.4652 at epoch 12, final train loss
+  0.747), and the greedy output (`exp_6_greedy_results.txt`) is **byte-identical** to
+  `exp_5_results.txt`. So exp_5 is the greedy baseline for this comparison. No errors; `top_k=0`
+  caused no warnings. Sampling took ~8-15s per setting/seed.
+- Extracted with `extract_submission.py --notebook ECE592HW4_colab.ipynb --label <label>` →
+  `exp_6a_s0/6a_s1/6b_s0/6b_s1_results.txt` (all validated 80 × 400, prefixes identical to exp_5's).
+  Scored with `score_proxies.py` twice (detector seeds 0 and 1) → `proxy_scores_exp6_seed{0,1}.csv`.
+
+  | File | Proxy FID | Proxy PDR (detector seed 0) | Proxy PDR (detector seed 1) |
+  |---|---|---|---|
+  | exp_5 (greedy) | 82.95 | 0.637 | 0.775 |
+  | 6a_s0 (T 0.8, top-k 50) | 70.48 | 0.738 | 0.875 |
+  | 6a_s1 | 67.11 | 0.850 | 0.938 |
+  | 6b_s0 (T 1.0, top-p 0.9) | 67.15 | 0.800 | 0.875 |
+  | 6b_s1 | 66.17 | 0.787 | 0.863 |
+  | *real dev reference* | 63.76 (floor) | 0.850 (ceiling) | 0.925 (ceiling) |
+  | *blank-bottom control* | 101.77 | 0.000 | 0.013 |
+
+  Tail stats (last 160 tokens, 80 images; prefix avg = 22.8 colors):
+
+  | File | Colors/tail | Distinct colors | Single-token tails | Avg longest run | White share |
+  |---|---|---|---|---|---|
+  | exp_5 (greedy) | 6.54 | 114 | 0 | 42.6 | 0.527 |
+  | 6a_s0 | 16.06 | 156 | 0 | 24.5 | 0.491 |
+  | 6a_s1 | 16.09 | 160 | 0 | 27.8 | 0.504 |
+  | 6b_s0 | 18.62 | 161 | 0 | 27.9 | 0.492 |
+  | 6b_s1 | 18.94 | 161 | 0 | 28.8 | 0.507 |
+
+  Tail agreement between the two seeds of one setting: 0.505 (6a), 0.469 (6b); sampled vs greedy:
+  0.52-0.56 — i.e. the sampled completions genuinely differ run to run.
+- **Sampling beat greedy decisively on both proxies, under both detector seeds.** Proxy FID fell
+  from 82.95 to 66-70, to within ~3 of the real-vs-real floor (63.76) — a 12-17 point gain, far
+  larger than the seed-to-seed spread. Proxy PDR rose in every sampled file under both detectors
+  (e.g. 0.637 → 0.74-0.85 with detector seed 0; 0.775 → 0.86-0.94 with seed 1), reaching the
+  detector's own real-image ceiling. Tails have 16-19 colors (vs 6.5), long repeated runs shrank
+  from 42.6 to ~25-29, white share dropped slightly. This supports the hypothesis from exp_3/4:
+  greedy decoding's collapse toward white/repeats was the main bottleneck, not the model.
+- **Noise (now partly measured).** FID is deterministic given the file (identical across detector
+  seeds); across sampling seeds it varied by 3.4 points for 6a (70.48 vs 67.11) and 1.0 for 6b
+  (67.15 vs 66.17). The detector seed alone moves PDR by ~0.1-0.14 (exp_5: 0.637 vs 0.775) and
+  changes the detector's real-image ceiling (0.850 vs 0.925), but the *ordering* greedy < sampled
+  held under both. **6a vs 6b cannot be separated** with this evidence (FID within noise, PDR
+  ordering flips between rows/detectors); 6b looks marginally more stable on FID.
+- Caveats: the proxies can't see everything — in particular local speckle/noisy pixels from
+  sampling at temperature 1.0 may not be penalized, so the generated grids still need a visual
+  look (blank for now: _add your impression_). Proxy thresholds don't transfer to the TAs' FID/PDR;
+  the notebook-side proxy cell (45) on this Colab run gave PDR 0.700 for the greedy file (a third
+  detector draw: ceiling 0.863) and FID 82.95, matching the local script's FID exactly.
+- Open decision (not made): the submitted `.txt` still comes from the greedy path (cell 37/40).
+  Adopting sampling means changing which cell produces the final file, picking a setting, and
+  fixing a seed *in advance* rather than choosing the best-scoring seed (that would overfit a noisy
+  proxy). FID / PDR from the TAs: **unknown**.
+
+---
+
+## exp_7 — Submission run: sampling in the main inference cell
+
+Goal: make the submitted `.txt` come from the notebook's main path (cell 37 → cell 40 printout)
+using the sampling that exp_6 showed beats greedy on both proxies, rather than from a side cell.
+Decision (user, on a tight schedule): setting and seed fixed **in advance**, not picked by proxy
+score — **6b** (temperature 1.0, top-p 0.9, top_k disabled) with `set_seed(0)`. 6a vs 6b was a
+statistical tie in exp_6; 6b was marginally more stable on FID.
+
+| Variable | Value | Changed from exp_5/6 greedy path? |
+|---|---|---|
+| Model / training | Llama 14.3M, exp_5 recipe (30 ep, warmup+cosine, dev-loss ckpt) — retrained by run-all, reproduced exp_5 exactly in exp_6 | no |
+| Cell 37 decoding | `set_seed(0)` then `generate(..., do_sample=True, temperature=1.0, top_p=0.9, top_k=0)` | **yes** (was greedy) |
+| Everything else | cells 0-36, 38-48 unchanged (dev eval in cell 35 still greedy; proxy and comparison-sampling cells kept) | no |
+
+Expected check: cell 40's printed `.txt` should be byte-identical to `exp_6b_s0_results.txt` (same
+checkpoint, same seed, same calls). If it isn't, sampling isn't fully reproducible on that GPU run
+— worth knowing before submitting. Submitted `.txt` = cell 40's extraction (`extract_submission.py`
+with no `--label`); the zip is `HW4_<unityid>.zip` (assumed `HW4_rrkulka3.zip`) with the executed
+notebook + that single `.txt`.
+
+**Result**
+- Full run-all in browser Colab; executed notebook saved as `hw_4/ECE592HW4_colab.ipynb` (49 cells,
+  no errors). Training reproduced exp_5/6 again: best dev loss 1.4652 at epoch 12, checkpoint saved
+  there. Cell 37 ran with the sampling edit.
+- **Cell 40's extracted `.txt` is byte-identical to `exp_6b_s0_results.txt`** — sampling was fully
+  reproducible, so the file submitted is exactly the file scored in exp_6 (proxy FID 67.15; proxy
+  PDR 0.800 / 0.875 under detector seeds 0 / 1; tail stats: 18.6 colors/tail, longest run 27.9).
+- Packaged `hw_4/submission/HW4_rrkulka3.zip` (verified by reopening): exactly 2 files —
+  `ECE592HW4_rrkulka3.ipynb` (the executed notebook; 14 code cells with outputs; scanned for
+  emails/tokens, none) and `reconstructed_results.txt` (80 lines × 400 ints, values 0-166).
+  Local `ECE592HW4_rrkulka3.ipynb` (no outputs, pre-run) was left untouched; the zip's notebook is
+  a copy of the executed Colab one under the assignment's name.
+- Not verified / assumptions: the UnityID in the zip name (`rrkulka3`); that the TAs accept the
+  notebook's name and extra cells (proxy + comparison-sampling sections); FID/PDR from the TAs:
+  **unknown** — the proxies can't confirm any tier.
+
+---
+
+## exp_8 — Horizontal-flip augmentation for the generator (Strong push, step 2)
+
+Overfitting is the generator's bottleneck (dev loss bottoms at epoch 12 then rises). Mirroring the
+training sprites gives more variety without new data. Chosen by the user from the options presented
+(the assistant's leans): **random flip at probability 0.5 each time an image is drawn** (not a
+duplicated dataset), keeping compute and the schedule identical to exp_5/exp_7 so any change is
+attributable to the augmentation; plus a **copy of the best checkpoint to Google Drive** so later
+sessions (step 3 development) can reload it instead of retraining.
+
+| Variable | Value | Changed from exp_7? |
+|---|---|---|
+| Model / schedule / epochs / lr / dropout | Llama 14.3M, 30 epochs, warmup + cosine, peak 3e-4, attention dropout 0.3, weight decay 0.1 | no |
+| Training data | 632 real train images; each draw mirrored left-right (each of the 20 rows reversed) with p = 0.5 | **yes** (was never flipped) |
+| Dev / dev-loss / test loaders | unflipped (dev loss stays comparable with exp_5's 1.4652) | no |
+| Checkpoint rule | lowest dev loss | no |
+| Decoding in cell 37 | sampling: T 1.0, top-p 0.9, top_k 0, `set_seed(0)` | no |
+| Checkpoint copy | `best_model.pth` → `/content/drive/MyDrive/ece592_hw4/best_model_flip_aug.pth` (needs Drive mounted by cell 5; failures only print a message) | **yes** (new) |
+
+Notebook edits (cell numbers unchanged): cell 17 (`import random`; `hflip_prob` argument on
+`PixelSequenceDataset`, used only in `train` mode), cell 19 (`hflip_prob=0.5` on the *training*
+dataset only), cell 35 (guarded Drive copy after the training loop). Checked locally with real torch:
+p=0 identical to the original, p=1 equals the mirrored image (inputs and labels), p=0.5 flips ~46%
+of draws and is reproducible with a fixed seed, dev/test modes unaffected, Drive block falls back to a
+message when Drive isn't mounted.
+
+Flagged: the augmentation makes sampling order differ from exp_5 even with the same seed, so exact
+reproduction of exp_5 is not expected; sprites may have a favored facing direction, so mirroring could
+hurt — dev loss decides. A single seed means small dev-loss differences from 1.4652 are not
+meaningful.
+
+**What we'd watch for:** best dev loss clearly below 1.4652 (and which epoch it lands on; flip
+augmentation may push it later); a flatter or later-rising dev-loss curve; then the usual extraction
+and proxy scoring of cell 40's output (compare with exp_7 / `exp_6b_s0`: proxy FID 67.15, PDR A 0.692
+/ B 0.721 under v2). If dev loss does not improve, keep the exp_5 recipe for step 3.
+
+**Result**
+- Run in browser Colab, executed notebook = `hw_4/ECE592HW4_colab.ipynb` (49 cells, no errors, step-2
+  code confirmed present). Drive copy worked (`best_model_flip_aug.pth` saved).
+- **Best dev loss 1.4685 at epoch 18** vs exp_5/7's **1.4652 at epoch 12** — a tie (0.003 is
+  meaningless at one seed). What changed is the curve's shape: the best epoch moved later (12 → 18),
+  and overfitting is gentler — dev loss at epoch 30 is **1.5095** vs 1.6202 before; final training
+  loss (dropout on) 1.02 vs 0.75. So flip augmentation slows memorization but did not improve the
+  best model. Dev accuracy: best 0.3885 (ep 17), 0.3805 at ep 30 (uninformative as usual).
+- Outputs extracted: `exp_8_results.txt` (cell 40; byte-identical to `exp_8_6b_s0_results.txt`, same
+  setting/seed) and `exp_8_6a_s0/6a_s1/6b_s0/6b_s1_results.txt` (cells 47-48). Scored together with the
+  four exp_6 files (old model) by the v2 script (3 detector seeds each): `proxy_scores_exp8.csv`,
+  `proxy_exp8_run.log`.
+
+  | File | PDR A | PDR B | Proxy FID | Colors/tail | Longest run |
+  |---|---|---|---|---|---|
+  | old 6a_s0 | 0.742 | 0.725 | 70.48 | 16.06 | 24.5 |
+  | old 6a_s1 | 0.817 | 0.700 | 67.11 | 16.09 | 27.8 |
+  | old 6b_s0 (exp_7 submission) | 0.692 | 0.721 | 67.15 | 18.62 | 27.9 |
+  | old 6b_s1 | 0.758 | 0.750 | 66.17 | 18.94 | 28.8 |
+  | **new 6a_s0** | 0.808 | 0.704 | 67.84 | 14.44 | 27.1 |
+  | **new 6a_s1** | 0.787 | 0.792 | 69.58 | 15.05 | 29.0 |
+  | **new 6b_s0** (= exp_8_results.txt) | 0.808 | 0.812 | **65.40** | 16.07 | 28.7 |
+  | **new 6b_s1** | 0.779 | 0.775 | 65.83 | 16.26 | 25.9 |
+  | *real dev ceiling / floor* | 0.854 | 0.792 | 63.76 | – | – |
+
+  Means over the four files: **old** FID 67.73, PDR A 0.752, PDR B 0.724; **new** FID 67.16, PDR A
+  0.795, PDR B 0.771. For the pre-committed setting (6b, seed 0): old 67.15 / 0.692 / 0.721 vs new
+  65.40 / 0.808 / 0.812.
+- **Reading:** the new model is slightly better on all three proxies on average (FID −0.6, PDR A
+  +0.04, PDR B +0.05) and for 6b/seed 0, but every difference is within the noise we've measured
+  (sampling-seed FID spread 1-3 points, per-file PDR std 0.04-0.08, so a mean of four files is
+  uncertain by roughly ±0.03-0.04). Tails have slightly *fewer* colors (14-16 vs 16-19). Honest
+  summary: flip augmentation is, at best, a small win; a tie on dev loss with a gentler curve.
+- **Both models are now near what our proxies can measure**: FID 65-68 vs real-vs-real floor 63.76;
+  PDR A 0.78-0.81 vs detector ceiling 0.854 — little headroom left to show further gains.
+- **Decision (user): submit this run (exp_8), and skip step 3 (best-of-n)** — little proxy headroom
+  and a risk of fitting our own detector. The final zip `hw_4/submission/HW4_rrkulka3.zip` was
+  rebuilt from this run: `ECE592HW4_rrkulka3.ipynb` (copy of the executed `ECE592HW4_colab.ipynb`;
+  49 cells, 14 code cells with outputs, no errors, no unexecuted cells, no emails/tokens) +
+  `reconstructed_results.txt` (= `exp_8_results.txt`, 80 × 400, values 0-166, verified equal to the
+  notebook's own cell-40 output). The previous exp_7 zip is kept as
+  `submission/HW4_rrkulka3_exp7_backup.zip`. Submission config: Llama 14.3M, flip augmentation,
+  warmup+cosine, dev-loss checkpoint (epoch 18, dev loss 1.4685), sampling T 1.0 / top-p 0.9 / seed 0.
+  Proxy read for this file: FID 65.40, PDR A 0.808 / B 0.812 (v2 detectors). TA FID/PDR: **unknown**.
 
 ---
 

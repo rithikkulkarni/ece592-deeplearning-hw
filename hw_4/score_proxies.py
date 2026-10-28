@@ -1,17 +1,21 @@
 """Score generated-result files with local proxy metrics (PDR and FID).
 
-Standalone version of the notebook's "Proxy Metrics" section (cells 41-45), so any number of
-exp_N_results.txt files can be scored against the same detector and reference set.
+Standalone, stronger version of the notebook's "Proxy Metrics" section (cells 41-45), so any number
+of exp_N_results.txt files can be scored by the same detectors and reference set.
 
-    .venv/Scripts/python.exe score_proxies.py exp_1_results.txt exp_2_results.txt ...
+    .venv/Scripts/python.exe score_proxies.py exp_5_results.txt exp_6b_s0_results.txt ...
 
 These are local stand-ins, NOT the TAs' FID/PDR:
-  - Proxy PDR: a small CNN trained on real images (label 1) vs. real images whose bottom 40% is
-    corrupted (label 0). One detector is trained per invocation and used for every file.
+  - Proxy PDR: two detectors trained to tell real images (label 1; horizontally flipped copies are
+    added) from real images whose bottom 40% was corrupted (label 0). The cut is always at row 12,
+    where the model's generated part begins. Seven corruption families exist; each detector trains
+    on a different subset, so each is also tested on families it never saw.
+      Detector A: small CNN, trained on flat / noise / swap / mirror / shift.
+      Detector B: MLP on the flattened image, trained on flat / noise / swap / rowshuffle / smear.
+    Each is trained with several seeds and its PDR reported as mean (std) over seeds.
   - Proxy FID: Frechet distance between Inception features of a file's 80 images and the 712 real
     train + dev images. With n=80 it is noisy and biased (see the real-vs-real floor row).
-Use them to compare runs with each other only. The detector here trains on CPU (or GPU if present),
-so its numbers will differ slightly from the one trained inside the notebook on Colab.
+Use them to compare runs with each other only.
 """
 import argparse
 import csv
@@ -26,10 +30,17 @@ from torch import nn, optim
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-TAIL_START = 240  # tokens 240-399 (bottom 40% of the 20x20 image) are what the model generates
+TAIL_START = 240  # tokens 240-399 (rows 12-19, the bottom 40% of the 20x20 image) are what the model generates
 HERE = Path(__file__).parent
 
+ALL_FAMILIES = ["flat", "noise", "swap", "mirror", "shift", "rowshuffle", "smear"]
+TRAIN_FAMILIES = {
+    "A": ["flat", "noise", "swap", "mirror", "shift"],
+    "B": ["flat", "noise", "swap", "rowshuffle", "smear"],
+}
 
+
+# ----------------------------------------------------------------------------- image helpers
 def to_rgb(seqs: np.ndarray, cmap: np.ndarray) -> np.ndarray:
     """Token sequences (N, 400) -> RGB images (N, 20, 20, 3), uint8."""
     return cmap[seqs].reshape(len(seqs), 20, 20, 3)
@@ -37,6 +48,11 @@ def to_rgb(seqs: np.ndarray, cmap: np.ndarray) -> np.ndarray:
 
 def to_tensor(seqs: np.ndarray, cmap: np.ndarray) -> torch.Tensor:
     return torch.from_numpy(to_rgb(seqs, cmap)).float().div(255).permute(0, 3, 1, 2)
+
+
+def flip_h(seqs: np.ndarray) -> np.ndarray:
+    """Mirror each 20x20 image left-to-right (token sequences in, token sequences out)."""
+    return seqs.reshape(-1, 20, 20)[:, :, ::-1].reshape(len(seqs), 400)
 
 
 def frechet_distance(f1: np.ndarray, f2: np.ndarray) -> float:
@@ -53,26 +69,55 @@ def frechet_distance(f1: np.ndarray, f2: np.ndarray) -> float:
     return float(((mu1 - mu2) ** 2).sum() + np.trace(s1) + np.trace(s2) - 2 * tr_covmean)
 
 
-def corrupt(seq: np.ndarray, kind: int, rng: np.random.Generator, train_seqs: np.ndarray) -> np.ndarray:
-    """Copy of a real image whose bottom 40% is replaced, giving a 'not a Pokemon' example.
+# ----------------------------------------------------------------------------- corruptions
+def corrupt(seq: np.ndarray, family: str, rng: np.random.Generator, train_seqs: np.ndarray) -> np.ndarray:
+    """Copy of a real image whose bottom 40% (rows 12-19) is replaced, giving a 'not a Pokemon' example.
 
-    kind 0: one flat color (taken from the image itself)
-    kind 1: noise (pixels drawn at random from the image's own top 60%)
-    kind 2: the bottom of a different real training image
+    flat:       the whole tail is one color taken from the image itself
+    noise:      tail pixels drawn at random from the image's own top 60%
+    swap:       the tail of a different real training image
+    mirror:     the real tail, flipped left to right
+    shift:      the real tail, rolled sideways by 4-16 columns (wrapping around)
+    rowshuffle: the real tail rows in a random order
+    smear:      the last real row (row 11) repeated down all 8 tail rows
     """
     out = seq.copy()
-    prefix = seq[:TAIL_START]
-    if kind == 0:
+    prefix, tail = seq[:TAIL_START], seq[TAIL_START:].reshape(8, 20)
+    if family == "flat":
         out[TAIL_START:] = rng.choice(prefix)
-    elif kind == 1:
+    elif family == "noise":
         out[TAIL_START:] = rng.choice(prefix, size=len(seq) - TAIL_START)
-    else:
+    elif family == "swap":
         out[TAIL_START:] = train_seqs[rng.integers(len(train_seqs))][TAIL_START:]
+    elif family == "mirror":
+        out[TAIL_START:] = tail[:, ::-1].reshape(-1)
+    elif family == "shift":
+        out[TAIL_START:] = np.roll(tail, int(rng.integers(4, 17)), axis=1).reshape(-1)
+    elif family == "rowshuffle":
+        out[TAIL_START:] = tail[rng.permutation(8)].reshape(-1)
+    elif family == "smear":
+        out[TAIL_START:] = np.tile(seq[TAIL_START - 20:TAIL_START], 8)
+    else:
+        raise ValueError(family)
     return out
 
 
-class PokemonDetector(nn.Module):
-    """Small CNN on 20x20 RGB images -> one logit (positive = looks like a real Pokemon)."""
+def make_negative(seq: np.ndarray, families: list, rng: np.random.Generator, train_seqs: np.ndarray):
+    """A corrupted copy of seq from a random allowed family, or None if every try left it unchanged.
+
+    Corruptions can leave an image identical (e.g. mirroring an all-white tail); such a 'negative'
+    would be a real image labeled fake, so it is rejected and another family is tried.
+    """
+    for _ in range(10):
+        out = corrupt(seq, families[int(rng.integers(len(families)))], rng, train_seqs)
+        if not np.array_equal(out, seq):
+            return out
+    return None
+
+
+# ----------------------------------------------------------------------------- detectors
+class CNNDetector(nn.Module):
+    """Detector A: small CNN on 20x20 RGB images -> one logit (positive = looks like a real Pokemon)."""
 
     def __init__(self):
         super().__init__()
@@ -87,30 +132,51 @@ class PokemonDetector(nn.Module):
         return self.head(self.features(x)).squeeze(-1)
 
 
-def train_detector(train_seqs, cmap, device, epochs, rng) -> PokemonDetector:
-    detector = PokemonDetector().to(device)
-    optimizer = optim.AdamW(detector.parameters(), lr=1e-3, weight_decay=1e-2)
+class MLPDetector(nn.Module):
+    """Detector B: MLP on the flattened 20x20x3 image (a different inductive bias from the CNN)."""
+
+    def __init__(self):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(20 * 20 * 3, 512), nn.ReLU(), nn.Dropout(0.3),
+            nn.Linear(512, 128), nn.ReLU(), nn.Dropout(0.3),
+            nn.Linear(128, 1),
+        )
+
+    def forward(self, x):
+        return self.net(x).squeeze(-1)
+
+
+def train_detector(model: nn.Module, families: list, train_seqs, cmap, device, epochs, rng) -> nn.Module:
+    model = model.to(device)
+    optimizer = optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-2)
     criterion = nn.BCEWithLogitsLoss()
+    real = np.concatenate([train_seqs, flip_h(train_seqs)])  # positives: real images + mirrored copies
     for epoch in range(epochs):
-        detector.train()
-        # Real images (label 1) + a fresh random corruption of each one (label 0), reshuffled every epoch
-        negatives = np.stack([corrupt(s, int(rng.integers(3)), rng, train_seqs) for s in train_seqs])
-        x_all = np.concatenate([train_seqs, negatives])
-        y_all = np.concatenate([np.ones(len(train_seqs)), np.zeros(len(negatives))])
+        model.train()
+        # Fresh random corruption of every real image each epoch (label 0), reshuffled
+        negatives = [make_negative(s, families, rng, train_seqs) for s in real]
+        negatives = np.stack([n for n in negatives if n is not None])
+        x_all = np.concatenate([real, negatives])
+        y_all = np.concatenate([np.ones(len(real)), np.zeros(len(negatives))])
         order = rng.permutation(len(x_all))
-        epoch_loss = 0.0
         for i in range(0, len(x_all), 64):
             idx = order[i:i + 64]
             xb = to_tensor(x_all[idx], cmap).to(device)
             yb = torch.from_numpy(y_all[idx]).float().to(device)
-            loss = criterion(detector(xb), yb)
+            loss = criterion(model(xb), yb)
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
-            epoch_loss += loss.item() * len(idx)
-        if (epoch + 1) % 5 == 0:
-            print(f"Detector epoch {epoch + 1}/{epochs}, Loss: {epoch_loss / len(x_all):.4f}")
-    return detector
+    return model
+
+
+@torch.no_grad()
+def probs(model: nn.Module, seqs: np.ndarray, cmap, device) -> np.ndarray:
+    """Probability that each image (rows of token ids) looks like a real Pokemon."""
+    model.eval()
+    return torch.sigmoid(model(to_tensor(seqs, cmap).to(device))).cpu().numpy()
 
 
 def main() -> None:
@@ -118,19 +184,19 @@ def main() -> None:
     ap.add_argument("files", nargs="+", type=Path, help="result .txt files (80 lines x 400 ints each)")
     ap.add_argument("--csv", type=Path, default=HERE / "proxy_scores.csv", help="where to write the summary table")
     ap.add_argument("--det-epochs", type=int, default=30, help="detector training epochs")
-    ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--det-seeds", type=int, default=3, help="number of detector seeds to average over")
+    ap.add_argument("--seed", type=int, default=0, help="first detector seed")
     args = ap.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device: {device}")
-    rng = np.random.default_rng(args.seed)
-    torch.manual_seed(args.seed)
 
     # --- Real data (same HF dataset the notebook uses) ---
     pokemon = load_dataset("lca0503/ml2025-hw4-pokemon")
     cmap = np.array(load_dataset("lca0503/ml2025-hw4-colormap")["train"]["color"], dtype=np.uint8)
     train_seqs = np.array(pokemon["train"]["pixel_color"])  # (632, 400)
     dev_seqs = np.array(pokemon["dev"]["pixel_color"])      # (80, 400)
+    dev_flipped = flip_h(dev_seqs)
 
     # --- Result files ---
     scored = {}
@@ -139,21 +205,58 @@ def main() -> None:
         if seqs.shape != (80, 400) or seqs.min() < 0 or seqs.max() >= len(cmap):
             sys.exit(f"{path}: expected 80 x 400 ints in 0-{len(cmap) - 1}, got shape {seqs.shape}")
         scored[path.name] = seqs
+    blanks = {}
+    for name, seqs in scored.items():
+        blank = seqs.copy()
+        blank[:, TAIL_START:] = 0  # control: the given prefix + a blank white bottom
+        blanks[name] = blank
 
-    # --- Detector (one for all files) ---
-    detector = train_detector(train_seqs, cmap, device, args.det_epochs, rng)
+    # Fixed corrupted dev images per family (same for every detector), for the test matrix
+    dev_rng = np.random.default_rng(1234)
+    dev_negatives = {}
+    for fam in ALL_FAMILIES:
+        negs = [make_negative(s, [fam], dev_rng, train_seqs) for s in dev_seqs]
+        dev_negatives[fam] = np.stack([n for n in negs if n is not None])
 
-    @torch.no_grad()
-    def detector_probs(seqs: np.ndarray) -> np.ndarray:
-        detector.eval()
-        return torch.sigmoid(detector(to_tensor(seqs, cmap).to(device))).cpu().numpy()
+    # --- Detectors: A (CNN) and B (MLP), several seeds each ---
+    makers = {"A": CNNDetector, "B": MLPDetector}
+    pdr = {k: {n: [] for n in scored} for k in makers}        # detector -> file -> [PDR per seed]
+    prob = {k: {n: [] for n in scored} for k in makers}       # mean probability per seed
+    pdr_blank = {k: {n: [] for n in scored} for k in makers}
+    ceiling = {k: [] for k in makers}
+    flip_accept = {k: [] for k in makers}
+    matrix = {k: {f: [] for f in ALL_FAMILIES} for k in makers}  # rejection rate per family
+    for s in range(args.seed, args.seed + args.det_seeds):
+        for key, maker in makers.items():
+            torch.manual_seed(s)
+            rng = np.random.default_rng(s)
+            model = train_detector(maker(), TRAIN_FAMILIES[key], train_seqs, cmap, device, args.det_epochs, rng)
+            ceiling[key].append(float((probs(model, dev_seqs, cmap, device) > 0.5).mean()))
+            flip_accept[key].append(float((probs(model, dev_flipped, cmap, device) > 0.5).mean()))
+            for fam in ALL_FAMILIES:
+                matrix[key][fam].append(float((probs(model, dev_negatives[fam], cmap, device) <= 0.5).mean()))
+            for name in scored:
+                p = probs(model, scored[name], cmap, device)
+                pdr[key][name].append(float((p > 0.5).mean()))
+                prob[key][name].append(float(p.mean()))
+                pdr_blank[key][name].append(float((probs(model, blanks[name], cmap, device) > 0.5).mean()))
+            print(f"seed {s} detector {key}: real dev accept {ceiling[key][-1]:.3f}")
 
-    print(f"Real dev images judged Pokemon:                {(detector_probs(dev_seqs) > 0.5).mean():.3f}  (want ~1)")
-    for kind, name in enumerate(["flat color", "noise", "swapped tail"]):
-        corrupted = np.stack([corrupt(s, kind, rng, train_seqs) for s in dev_seqs])
-        print(f"Corrupted dev ({name:12s}) judged NOT Pokemon: {(detector_probs(corrupted) <= 0.5).mean():.3f}  (want ~1)")
+    ms = lambda xs: (float(np.mean(xs)), float(np.std(xs)))
 
-    # --- Inception features ---
+    print("\nDETECTOR CHECK on held-out dev images (mean over seeds; want ~1 everywhere)")
+    print(f"{'':32}{'A (CNN)':>10}{'B (MLP)':>10}")
+    print(f"{'real dev accepted':32}{ms(ceiling['A'])[0]:>10.3f}{ms(ceiling['B'])[0]:>10.3f}")
+    print(f"{'flipped real dev accepted':32}{ms(flip_accept['A'])[0]:>10.3f}{ms(flip_accept['B'])[0]:>10.3f}")
+    for fam in ALL_FAMILIES:
+        cells = []
+        for key in ("A", "B"):
+            star = "*" if fam in TRAIN_FAMILIES[key] else " "
+            cells.append(f"{ms(matrix[key][fam])[0]:>9.3f}{star}")
+        print(f"{'rejected: ' + fam:32}{cells[0]}{cells[1]}")
+    print("(* = family was in that detector's training set; unmarked = unseen family)")
+
+    # --- Inception features / FID ---
     inception = InceptionV3([InceptionV3.BLOCK_INDEX_BY_DIM[2048]]).to(device).eval()
 
     @torch.no_grad()
@@ -166,42 +269,41 @@ def main() -> None:
 
     f_train, f_dev = inception_features(train_seqs), inception_features(dev_seqs)
     f_ref = np.concatenate([f_train, f_dev])  # real reference set: 712 images
-
-    rows = []
-    for name, seqs in scored.items():
-        blank = seqs.copy()
-        blank[:, TAIL_START:] = 0  # control: the given prefix + a blank white bottom
-        probs = detector_probs(seqs)
-        rows.append({
-            "file": name,
-            "proxy_pdr": float((probs > 0.5).mean()),
-            "mean_prob": float(probs.mean()),
-            "proxy_fid": frechet_distance(inception_features(seqs), f_ref),
-            "pdr_blank_control": float((detector_probs(blank) > 0.5).mean()),
-            "fid_blank_control": frechet_distance(inception_features(blank), f_ref),
-        })
-    ceiling = float((detector_probs(dev_seqs) > 0.5).mean())
     floor = frechet_distance(f_dev, f_train)
 
+    rows = []
+    for name in scored:
+        a_m, a_s = ms(pdr["A"][name])
+        b_m, b_s = ms(pdr["B"][name])
+        rows.append({
+            "file": name,
+            "pdr_A": a_m, "pdr_A_std": a_s, "pdr_B": b_m, "pdr_B_std": b_s,
+            "proxy_fid": frechet_distance(inception_features(scored[name]), f_ref),
+            "pdr_A_blank": ms(pdr_blank["A"][name])[0], "pdr_B_blank": ms(pdr_blank["B"][name])[0],
+            "fid_blank": frechet_distance(inception_features(blanks[name]), f_ref),
+        })
+
     # --- Report ---
-    header = f"{'file':26}{'proxy PDR':>10}{'mean prob':>11}{'proxy FID':>11}{'PDR blank':>11}{'FID blank':>11}"
+    header = (f"{'file':26}{'PDR A':>14}{'PDR B':>14}{'proxy FID':>11}{'A blank':>9}{'B blank':>9}{'FID blank':>11}")
     print("\n" + "=" * len(header))
-    print("PROXY METRICS (local stand-ins; compare runs with each other only)")
+    print(f"PROXY METRICS (local stand-ins; compare runs with each other only)  PDR = mean (std) over {args.det_seeds} detector seeds")
     print("=" * len(header))
     print(header)
     print("-" * len(header))
     for r in rows:
-        print(f"{r['file']:26}{r['proxy_pdr']:>10.3f}{r['mean_prob']:>11.3f}{r['proxy_fid']:>11.2f}"
-              f"{r['pdr_blank_control']:>11.3f}{r['fid_blank_control']:>11.2f}")
+        print(f"{r['file']:26}{r['pdr_A']:>8.3f} ({r['pdr_A_std']:.2f}){r['pdr_B']:>8.3f} ({r['pdr_B_std']:.2f})"
+              f"{r['proxy_fid']:>11.2f}{r['pdr_A_blank']:>9.3f}{r['pdr_B_blank']:>9.3f}{r['fid_blank']:>11.2f}")
     print("-" * len(header))
-    print(f"{'real dev (ceiling/floor)':26}{ceiling:>10.3f}{'':>11}{floor:>11.2f}   <- PDR ceiling; FID floor = real dev vs real train (n=80)")
+    print(f"{'real dev (ceiling / floor)':26}{ms(ceiling['A'])[0]:>14.3f}{ms(ceiling['B'])[0]:>14.3f}{floor:>11.2f}"
+          "   <- PDR ceiling = real dev accepted; FID floor = real dev vs real train (n=80)")
     print("=" * len(header))
 
     with open(args.csv, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=list(rows[0]))
         writer.writeheader()
         writer.writerows(rows)
-        writer.writerow({"file": "REAL_DEV_REFERENCE", "proxy_pdr": ceiling, "proxy_fid": floor})
+        writer.writerow({"file": "REAL_DEV_REFERENCE", "pdr_A": ms(ceiling["A"])[0], "pdr_B": ms(ceiling["B"])[0],
+                         "proxy_fid": floor})
     print(f"Wrote {args.csv}")
 
 

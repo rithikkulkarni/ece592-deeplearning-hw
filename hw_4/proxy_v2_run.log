@@ -1,0 +1,41 @@
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Device: cpu
+seed 0 detector A: real dev accept 0.787
+seed 0 detector B: real dev accept 0.850
+seed 1 detector A: real dev accept 0.900
+seed 1 detector B: real dev accept 0.750
+seed 2 detector A: real dev accept 0.875
+seed 2 detector B: real dev accept 0.775
+
+DETECTOR CHECK on held-out dev images (mean over seeds; want ~1 everywhere)
+                                   A (CNN)   B (MLP)
+real dev accepted                    0.854     0.792
+flipped real dev accepted            0.854     0.800
+rejected: flat                      0.963*    0.996*
+rejected: noise                     0.987*    0.954*
+rejected: swap                      0.942*    0.229*
+rejected: mirror                    0.750*    0.212 
+rejected: shift                     0.912*    0.383 
+rejected: rowshuffle                0.842     0.804*
+rejected: smear                     0.517     0.987*
+(* = family was in that detector's training set; unmarked = unseen family)
+
+==============================================================================================
+PROXY METRICS (local stand-ins; compare runs with each other only)  PDR = mean (std) over 3 detector seeds
+==============================================================================================
+file                               PDR A         PDR B  proxy FID  A blank  B blank  FID blank
+----------------------------------------------------------------------------------------------
+exp_1_results.txt            0.354 (0.02)   0.400 (0.07)      81.99    0.000    0.000     101.77
+exp_2_results.txt            0.333 (0.04)   0.858 (0.06)      71.04    0.000    0.000     101.77
+exp_3_results.txt            0.242 (0.02)   0.325 (0.06)      79.03    0.000    0.000     101.77
+exp_4_results.txt            0.667 (0.02)   0.567 (0.07)      82.94    0.000    0.000     101.77
+exp_5_results.txt            0.662 (0.09)   0.533 (0.11)      82.95    0.000    0.000     101.77
+exp_6a_s0_results.txt        0.742 (0.06)   0.725 (0.07)      70.48    0.000    0.000     101.77
+exp_6a_s1_results.txt        0.817 (0.03)   0.700 (0.05)      67.11    0.000    0.000     101.77
+exp_6b_s0_results.txt        0.692 (0.06)   0.721 (0.04)      67.15    0.000    0.000     101.77
+exp_6b_s1_results.txt        0.758 (0.06)   0.750 (0.10)      66.17    0.000    0.000     101.77
+----------------------------------------------------------------------------------------------
+real dev (ceiling / floor)         0.854         0.792      63.76   <- PDR ceiling = real dev accepted; FID floor = real dev vs real train (n=80)
+==============================================================================================
+Wrote proxy_scores_v2.csv
+exit=0
